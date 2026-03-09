@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900;
+  }
+
+  html.dark body {
+    @apply bg-slate-950 text-slate-100;
+  }
+}
+
+.speclab-tick-bold .xtick text,
+.speclab-tick-bold .ytick text,
+.speclab-tick-bold .xaxislayer-above text,
+.speclab-tick-bold .yaxislayer-above text {
+  font-weight: 700 !important;
+}
+
+.speclab-tick-italic .xtick text,
+.speclab-tick-italic .ytick text,
+.speclab-tick-italic .xaxislayer-above text,
+.speclab-tick-italic .yaxislayer-above text {
+  font-style: italic !important;
+}
+
+.speclab-sidebar {
+  --sb-scale: 1;
+}
+
+.speclab-sidebar .text-lg {
+  font-size: calc(1.125rem * var(--sb-scale));
+  line-height: calc(1.75rem * var(--sb-scale));
+}
+
+.speclab-sidebar .accordion-title,
+.speclab-sidebar .text-sm {
+  font-size: calc(0.875rem * var(--sb-scale));
+  line-height: calc(1.25rem * var(--sb-scale));
+}
+
+.speclab-sidebar .text-xs {
+  font-size: calc(0.75rem * var(--sb-scale));
+  line-height: calc(1rem * var(--sb-scale));
+}
+
+.speclab-sidebar .text-\[11px\] {
+  font-size: calc(11px * var(--sb-scale));
+  line-height: calc(16px * var(--sb-scale));
+}
+
+.speclab-sidebar :is(
+    select,
+    button,
+    input:not([type='checkbox']):not([type='range'])
+  ) {
+  font-size: calc(12px * var(--sb-scale));
+  min-height: calc(28px * var(--sb-scale));
+  padding-top: calc(4px * var(--sb-scale));
+  padding-bottom: calc(4px * var(--sb-scale));
+  padding-left: calc(8px * var(--sb-scale));
+  padding-right: calc(8px * var(--sb-scale));
+}
+
+.speclab-sidebar input[type='checkbox'] {
+  width: calc(14px * var(--sb-scale));
+  height: calc(14px * var(--sb-scale));
+}
+
+.speclab-sidebar input[type='range'] {
+  height: calc(16px * var(--sb-scale));
+}
