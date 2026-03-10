@@ -1,0 +1,495 @@
+SpecLab v2 (Python) - External AI Handoff Document
+Last updated: 2026-03-10
+Scope of this document: src_python/ only
+
+======================================================================
+1) PROJECT PURPOSE
+======================================================================
+SpecLab is a desktop spectrum analysis application for loading, viewing,
+processing, annotating, and exporting spectral data (for example Raman-like
+signals). It is implemented as a PySide6 GUI with a sidebar of processing
+panels and a central interactive plot (PyQtGraph).
+
+Core goals:
+- Load one or many text-based spectra files.
+- Visualize single spectrum or overlay many spectra.
+- Apply preprocessing steps:
+  - Cosmic ray (spike) removal
+  - Baseline correction (AsLS)
+  - Savitzky-Golay smoothing
+- Detect peaks automatically and manually.
+- Tune display and export settings.
+- Export images/data/peak tables.
+- Save and restore processing/display presets.
+
+
+======================================================================
+2) TECHNOLOGY STACK
+======================================================================
+- Language: Python
+- GUI: PySide6
+- Plot engine: pyqtgraph
+- Numeric/scientific: numpy, scipy
+- Storage:
+  - In-memory app state object with Qt signals
+  - Presets persisted to JSON file in user home config folder
+
+Virtual environment info (from src_python/.venv/pyvenv.cfg):
+- Python version: 3.14.3
+
+
+======================================================================
+3) RUNTIME ENTRY POINT AND APP SHELL
+======================================================================
+Entry point:
+- src_python/main.py
+  - Adds src_python/ to sys.path
+  - Creates QApplication
+  - Creates and shows MainWindow
+  - Runs app event loop
+
+Main shell:
+- src_python/app/main_window.py
+  - Creates shared AppState instance.
+  - Builds horizontal splitter:
+    - Left: Sidebar panels
+    - Right: SpectrumPlotWidget
+  - Enables drag and drop loading of files.
+  - Wires PeaksPanel into plot widget for manual peak picking callbacks.
+
+Accepted drag-drop extensions:
+- .txt, .csv, .tsv, .dat, .asc, .xy, .spc
+
+
+======================================================================
+4) HIGH-LEVEL ARCHITECTURE
+======================================================================
+Pattern used:
+- Centralized state container (AppState) + Qt signals.
+- UI panels mutate AppState via setter methods.
+- Plot listens to state signals and redraws.
+- Processing results are cached per spectrum ID in AppState dictionaries.
+
+Main module layers:
+- app/
+  - models: dataclasses for settings and spectrum entities
+  - state: central mutable state and signals
+  - main_window: application frame and drag-drop
+- core/
+  - pure processing logic (baseline, smoothing, cosmic, peak detection)
+  - parser logic
+  - palette logic
+  - presets serialization/persistence
+- ui/
+  - sidebar + panels + plot widget
+  - each panel edits AppState and/or processing caches
+
+
+======================================================================
+5) STATE MODEL (APPSTATE) AND SIGNALS
+======================================================================
+File: src_python/app/state.py
+
+Primary state buckets:
+- Spectra:
+  - _spectra: List[Spectrum]
+  - _active_spectrum_id: Optional[str]
+- Settings objects:
+  - _plot: PlotSettings
+  - _baseline: BaselineSettings
+  - _smoothing: SmoothingSettings
+  - _cosmic: CosmicSettings
+  - _peaks: PeaksSettings
+  - _graphics: GraphicsSettings
+  - _export: ExportSettings
+- Last-used directories:
+  - _last_folders: dict[str, str]
+- Per-spectrum derived data caches:
+  - cosmic_clean_y: Dict[spectrum_id, List[float]]
+  - processed_y: Dict[spectrum_id, List[float]]     (baseline corrected)
+  - baseline_y: Dict[spectrum_id, List[float]]      (estimated baseline)
+  - smoothed_y: Dict[spectrum_id, List[float]]
+  - peaks_auto: Dict[spectrum_id, List[Peak]]
+  - peaks_manual: Dict[spectrum_id, List[Peak]]
+
+Signals:
+- spectra_changed
+- active_spectrum_changed
+- plot_changed
+- baseline_changed
+- smoothing_changed
+- cosmic_changed
+- peaks_changed
+- graphics_changed
+- export_changed
+
+Important helper:
+- displayed_y(spectrum_id):
+  returns y in priority order:
+  smoothed_y > processed_y > cosmic_clean_y > raw y
+
+
+======================================================================
+6) DATA MODELS (DATACLASSES)
+======================================================================
+File: src_python/app/models.py
+
+Entities:
+- Spectrum: id, name, x[], y[], meta{}
+- Peak: id, x, source(auto/manual), i(optional index), kind, prominence, width
+
+Settings:
+- PlotSettings:
+  show_grid, show_all_spectra, reverse_overlay_order, stack_offset,
+  x_min/x_max/y_min/y_max, invert_x
+- BaselineSettings:
+  enabled, show_overlay, lambda_, p, iterations
+- SmoothingSettings:
+  window, poly_order
+- CosmicSettings:
+  window, threshold, max_width, positive_only, iterations, manual_enabled
+- PeaksSettings:
+  enabled, mode(active/all), source, polarity, min_prominence,
+  min_distance, max_peaks, manual_pick_enabled, marker/label display options,
+  leader style options, decimals
+- GraphicsSettings:
+  axis labels, typographic flags, tick visibility, grid style, axis style,
+  frame mode(open/box), trace width, font options, palette, canvas export size
+- ExportSettings:
+  filename, folder
+
+
+======================================================================
+7) PROCESSING PIPELINE LOGIC
+======================================================================
+Pipeline precedence for plotted/exported y:
+1) Cosmic-cleaned y (optional cache)
+2) Baseline-corrected y (optional cache, built from cosmic-clean or raw)
+3) Smoothed y (optional cache, built from processed or cosmic or raw)
+
+Actual display chain used by AppState.displayed_y:
+- smoothed > processed > cosmic > raw
+
+Cache invalidation rules implemented in panels:
+- Cosmic apply clears downstream baseline/smoothing caches.
+- Baseline apply clears smoothing cache.
+- Smoothing only writes smoothed_y.
+
+
+======================================================================
+8) CORE ALGORITHMS
+======================================================================
+8.1 Spectrum parser
+File: core/spectrum_parser.py
+- Parses text lines with at least two numeric columns.
+- Delimiter auto-detection among tab/comma/semicolon/whitespace.
+- Skips non-data lines (headers/comments).
+- Returns (x, y) or None when insufficient valid points.
+- extract_label_from_filename strips path and extension.
+
+8.2 Baseline correction
+File: core/baseline.py
+- Asymmetric Least Squares baseline estimation using scipy sparse solver.
+- asls_baseline(y, lam, p, n_iter) -> baseline z
+- apply_baseline(y, baseline) -> corrected y
+
+8.3 Cosmic ray removal
+File: core/cosmic.py
+- Iterative algorithm:
+  1. Savitzky-Golay smooth
+  2. residual = signal - smooth
+  3. MAD-based spike candidate mask
+  4. Keep only narrow spike groups (<= max_width)
+  5. Replace spikes with linear interpolation (fallback to smooth values)
+- Returns CosmicResult(y_clean, mask, removed_count)
+
+8.4 Smoothing
+File: core/smoothing.py
+- Savitzky-Golay smoothing wrapper with window sanitization.
+
+8.5 Peak detection
+File: core/peak_detection.py
+- scipy.signal.find_peaks based.
+- Supports prominence threshold, x-distance conversion to samples,
+  max count truncation, optional region filter, polarity mode.
+- Converts detections to app Peak objects for storage.
+
+8.6 Palette system
+File: core/palettes.py
+- Named fixed and gradient palettes.
+- get_palette_colors(name, count) and get_color_for_index().
+- "auto" returns None and plot falls back to DEFAULT_COLORWAY.
+
+8.7 Presets persistence
+File: core/presets.py
+- Stores settings snapshots to JSON:
+  - plot
+  - graphics
+  - baseline
+  - smoothing
+  - cosmic
+  - peaks
+- Default persistent file:
+  - ~/.speclab/speclab_presets.json
+- Supports:
+  - load all presets
+  - save all presets
+  - export presets to arbitrary JSON file
+  - import presets from arbitrary JSON file
+
+
+======================================================================
+9) UI PANELS AND FUNCTIONAL RESPONSIBILITIES
+======================================================================
+9.1 Sidebar
+File: ui/sidebar.py
+- Collapsible accordion sections in this order:
+  - Data
+  - Cosmic rays
+  - Baseline
+  - Smoothing
+  - Peaks
+  - Graphics
+  - Export
+  - Presets
+
+9.2 Data / Import panel
+File: ui/import_panel.py
+- Open files dialog and parse/import spectra.
+- Remove selected / clear all.
+- Maintains spectrum list and active selection.
+- Includes quick plot controls:
+  - show all overlay
+  - grid
+  - invert X
+  - stack offset (slider + spinbox)
+
+9.3 Cosmic panel
+File: ui/cosmic_panel.py
+- Parameter controls:
+  - window, threshold, max_width, positive_only, iterations
+- Actions:
+  - Apply cosmic / Reset cosmic (active spectrum)
+  - Apply ALL / Reset ALL (all spectra)
+- Writes cosmic_clean_y and clears downstream caches.
+
+9.4 Baseline panel
+File: ui/baseline_panel.py
+- Parameter controls:
+  - lambda (log scale), p, iterations
+  - show baseline overlay
+- Actions:
+  - Apply baseline / Reset baseline (active)
+  - Apply ALL / Reset ALL
+- Writes baseline_y and processed_y.
+
+9.5 Smoothing panel
+File: ui/smoothing_panel.py
+- Parameter controls:
+  - window, poly_order
+- Actions:
+  - Apply smoothing / Reset smoothing (active)
+  - Apply ALL / Reset ALL
+- Writes smoothed_y.
+
+9.6 Peaks panel
+File: ui/peaks_panel.py
+- Controls:
+  - enable peaks
+  - mode active/all
+  - min prominence
+  - min distance
+  - max peaks
+  - decimals
+  - show markers, show labels
+  - manual pick mode
+- Actions:
+  - Detect/Clear active
+  - Detect/Clear all
+- Manual interactions via plot:
+  - Ctrl+click: add manual peak
+  - Shift+click: remove nearest peak
+
+9.7 Graphics panel
+File: ui/graphics_panel.py
+- Controls for:
+  - axis labels
+  - font family and sizes
+  - tick style
+  - trace and axis widths
+  - frame mode
+  - palette
+  - tick label visibility
+  - grid visibility
+  - export canvas width/height
+
+9.8 Plot widget
+File: ui/plot_widget.py
+- Draws single or multiple traces from AppState.
+- Overlay logic with optional reverse order and stack offsets.
+- Active spectrum highlighting.
+- Optional baseline overlay in single-trace mode.
+- Peak markers and text labels overlay.
+- Crosshair and coordinate readout.
+- Click behavior:
+  - plain click: select nearest spectrum (overlay mode)
+  - Ctrl+click: manual peak add (if enabled)
+  - Shift+click: nearest peak remove (if enabled)
+
+9.9 Export panel
+File: ui/export_panel.py
+- Image export:
+  - PNG (optional transparent background)
+  - SVG
+  - uses graphics export_width/export_height
+- Data export:
+  - active spectrum to CSV(;) or TSV
+  - all spectra to CSV/TSV files
+  - optional decimal comma conversion
+- Peak table export:
+  - CSV/TSV with per-spectrum sections and source tags (A/M)
+- Remembers last-used folders via AppState.
+
+9.10 Presets panel
+File: ui/presets_panel.py
+- Features:
+  - Save current as new preset
+  - Update selected preset
+  - Apply selected preset
+  - Rename preset
+  - Delete preset (with confirm)
+  - Export all presets to JSON
+  - Import presets from JSON
+- Loads saved presets on panel initialization.
+
+
+======================================================================
+10) PRESET DATA FORMAT
+======================================================================
+Persistent file path:
+- ~/.speclab/speclab_presets.json
+
+Stored as JSON array of objects:
+[
+  {
+    "id": "<hex>",
+    "name": "My preset",
+    "created_at": "2026-03-10T12:34:56.123456",
+    "updated_at": "2026-03-10T12:34:56.123456",
+    "payload": {
+      "plot": {...},
+      "graphics": {...},
+      "baseline": {...},
+      "smoothing": {...},
+      "cosmic": {...},
+      "peaks": {...}
+    }
+  }
+]
+
+Notes:
+- Unknown keys are ignored by AppState setters.
+- Presets currently do not include loaded spectra data itself; only settings.
+- Import currently appends presets (no automatic deduplication by name/id).
+
+
+======================================================================
+11) FILE TREE (SOURCE-RELEVANT)
+======================================================================
+This tree intentionally excludes src_python/.venv and __pycache__.
+
+src_python/
+  main.py
+  app/
+    __init__.py
+    main_window.py
+    models.py
+    state.py
+  core/
+    __init__.py
+    baseline.py
+    cosmic.py
+    palettes.py
+    peak_detection.py
+    presets.py
+    smoothing.py
+    spectrum_parser.py
+  ui/
+    __init__.py
+    baseline_panel.py
+    cosmic_panel.py
+    export_panel.py
+    graphics_panel.py
+    import_panel.py
+    peaks_panel.py
+    plot_widget.py
+    presets_panel.py
+    sidebar.py
+    smoothing_panel.py
+
+
+======================================================================
+12) RUN / DEBUG INSTRUCTIONS
+======================================================================
+From repository root:
+- cd src_python
+- .venv\Scripts\python.exe main.py
+
+Alternative (if active venv):
+- python main.py
+
+No CLI interface is implemented; this is GUI-first.
+
+
+======================================================================
+13) INTERNAL EVENT FLOW (SIMPLIFIED)
+======================================================================
+1. User action in panel (for example Apply baseline).
+2. Panel writes settings and/or processing cache in AppState.
+3. Panel emits or triggers state signal (often via set_* methods and sometimes
+   explicit spectra_changed/peaks_changed emit).
+4. SpectrumPlotWidget receives signals and redraws.
+5. Export panel and other consumers read current state/caches when needed.
+
+
+======================================================================
+14) KNOWN LIMITATIONS / IMPLEMENTATION NOTES
+======================================================================
+- Peak labels in plot currently use fixed style (red, Arial size 8) instead of
+  fully honoring all advanced PeaksSettings label style fields.
+- Peak detection returns Peak.kind as "max" in conversion helper even when
+  polarity "min" or "both" is used.
+- Preset import currently extends list; duplicates are possible.
+- Some comments/docstrings may be outdated (for example sidebar header mentions
+  placeholders though all listed sections are now wired).
+- Export panel accesses plot internals via plot_widget._plot_item.
+
+
+======================================================================
+15) QUICK ORIENTATION FOR AN EXTERNAL AI
+======================================================================
+If you are an external AI entering this project, use this order:
+1. Read app/models.py to understand all settings and entities.
+2. Read app/state.py to understand state ownership and signal-based updates.
+3. Read ui/plot_widget.py to understand rendering and click interactions.
+4. Read ui/sidebar.py to map UI sections to panels.
+5. Read each panel in ui/ to map user controls to state mutations.
+6. Read core/* for processing and serialization details.
+
+
+======================================================================
+16) DOCUMENT MAINTENANCE PROTOCOL (IMPORTANT)
+======================================================================
+When updating this file in the future:
+- Always update "Last updated" date.
+- Keep section numbers stable (1..16) so external tools can anchor references.
+- Reflect any new/removed files in section 11.
+- Reflect any changed settings fields in sections 6 and 10.
+- Reflect any changed processing precedence in section 7.
+- Reflect new UI controls/actions in section 9.
+- Add major behavior changes to this changelog.
+
+Change log:
+- 2026-03-10: Initial version created. Includes Presets system integration
+  (core/presets.py, ui/presets_panel.py, sidebar wiring).
+

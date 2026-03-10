@@ -54,8 +54,8 @@ class AppState(QObject):
         self._peaks = PeaksSettings()
         self._graphics = GraphicsSettings()
         self._export = ExportSettings()
-        # ── Last used folder for file dialogs ─────────────
-        self._last_folder: str = ""
+        # ── Per-dialog last folder memory ─────────────────
+        self._last_folders: dict[str, str] = {}
 
         # ── Per-spectrum derived data (keyed by spectrum id) ─
         self.cosmic_clean_y: Dict[str, List[float]] = {}
@@ -112,15 +112,15 @@ class AppState(QObject):
     def export_settings(self) -> ExportSettings:
         return self._export
 
-    @property
-    def last_folder(self) -> str:
-        return self._last_folder
+    def last_folder(self, context: str = "default") -> str:
+        """Get last used folder for a specific dialog context."""
+        return self._last_folders.get(context, "")
 
-    def set_last_folder(self, path: str) -> None:
-        """Remember the directory of the last opened/saved file."""
+    def set_last_folder(self, path: str, context: str = "default") -> None:
+        """Remember the directory for a specific dialog context."""
         folder = os.path.dirname(path) if os.path.isfile(path) else path
         if os.path.isdir(folder):
-            self._last_folder = folder
+            self._last_folders[context] = folder
 
     # ── Spectrum mutations ─────────────────────────────────
 

@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
     def _load_files(self, paths: List[str]) -> None:
         """Parse and add spectrum files to the state (same logic as ImportPanel)."""
         if paths:
-            self._state.set_last_folder(paths[0])
+            self._state.set_last_folder(paths[0], "import")
         for path in paths:
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as fh:

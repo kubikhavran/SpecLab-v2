@@ -22,6 +22,7 @@ from ui.cosmic_panel import CosmicPanel
 from ui.export_panel import ExportPanel
 from ui.graphics_panel import GraphicsPanel
 from ui.peaks_panel import PeaksPanel
+from ui.presets_panel import PresetsPanel
 from ui.smoothing_panel import SmoothingPanel
 from .import_panel import ImportPanel
 
@@ -142,6 +143,9 @@ class Sidebar(QWidget):
                 expanded = False
             elif section_name == "Export":
                 content = ExportPanel(self._state, get_plot_widget=self._get_plot_widget)
+                expanded = False
+            elif section_name == "Presets":
+                content = PresetsPanel(self._state)
                 expanded = False
             else:
                 content = _placeholder(section_name)

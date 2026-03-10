@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from PySide6.QtSvg import QSvgGenerator; print\\(''QSvgGenerator OK''\\)\")",
+      "Bash(where python3:*)",
+      "Bash(where python:*)",
+      "Bash(py -0)",
+      "Bash(\"C:\\\\Users\\\\jakub\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python3.exe\" -c \"from PySide6.QtSvg import QSvgGenerator; print\\(''OK''\\)\")",
+      "Bash(pip show:*)",
+      "Bash(py -3.14 -m pip show PySide6)",
+      "Bash(py -3.14 -m pip list)",
+      "Bash(reg query:*)",
+      "Bash(py -3.11 --version)",
+      "Bash(py -3.11 -m pip show PySide6)",
+      "Bash(\"C:\\\\Python314\\\\python.exe\" -c \":*)",
+      "Bash(\"/c/Users/jakub/AppData/Local/Programs/Python/Python311/python.exe\" -c \"from PySide6.QtSvg import QSvgGenerator; print\\(''''QSvgGenerator OK''''\\)\" 2)",
+      "Bash(1 \"/c/Users/jakub/AppData/Local/Programs/Python/Python311/python.exe\" -m pip show PySide6)",
+      "Bash(echo \"$PATH\")",
+      "Bash(cmd.exe /c 'where python311.exe 2>nul')",
+      "Bash(cmd.exe /c 'python3.11 --version 2>nul')",
+      "Bash(find /c/Users/jakub/AppData/Local/Programs/ -name python*.exe)",
+      "Bash(cmd.exe /c \"py -3.11 --version 2>&1\")",
+      "Bash(cmd.exe /c \"py -0p\")",
+      "Bash(find 'f:/APPS/SpecLab V2/SpecLab-v2' -name *.cfg -o -name requirements.txt -o -name Pipfile)",
+      "Bash(cmd.exe /c \"reg query HKCU\\\\SOFTWARE\\\\Python /s 2>&1\")",
+      "Bash(cmd.exe /c \"reg query \"\"HKCU\\\\SOFTWARE\\\\Python\"\" /s\")"
+    ]
+  }
+}

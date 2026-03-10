@@ -68,6 +68,7 @@ class ImportPanel(QWidget):
         self._list = QListWidget()
         self._list.setAlternatingRowColors(True)
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._list.setMinimumHeight(80)
         layout.addWidget(self._list)
 
         # ── Quick plot controls ──
@@ -155,7 +156,7 @@ class ImportPanel(QWidget):
     # ── Slots ──────────────────────────────────────────────
 
     def _on_open_files(self) -> None:
-        start_dir = self._state.last_folder
+        start_dir = self._state.last_folder("import")
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Open spectrum files",
@@ -165,7 +166,7 @@ class ImportPanel(QWidget):
         if not paths:
             return
         if paths:
-            self._state.set_last_folder(paths[0])
+            self._state.set_last_folder(paths[0], "import")
 
         for path in paths:
             try:
