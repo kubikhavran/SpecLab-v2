@@ -175,6 +175,14 @@ Cache invalidation rules implemented in panels:
 - Baseline apply clears smoothing cache.
 - Smoothing only writes smoothed_y.
 
+Preset-apply materialization behavior:
+- Preset apply restores settings and then rebuilds/clears processing caches for
+  currently loaded spectra in strict order:
+  cosmic -> baseline -> smoothing -> auto peak detection.
+- If a stage is marked as not applied in preset payload, that stage cache is
+  cleared so stale results are not displayed.
+- Manual peaks are preserved; auto peaks are regenerated (or cleared).
+
 
 ======================================================================
 8) CORE ALGORITHMS
@@ -236,6 +244,17 @@ File: core/presets.py
   - save all presets
   - export presets to arbitrary JSON file
   - import presets from arbitrary JSON file
+- Captures pipeline materialization flags in payload["pipeline"]:
+  - cosmic_applied
+  - baseline_applied
+  - smoothing_applied
+  - auto_peaks_applied
+  - raw_only
+- apply_preset_payload(...) restores settings and materializes processing
+  results immediately for currently loaded spectra.
+- Backward compatibility:
+  - older presets without payload["pipeline"] are still accepted
+  - missing flags are resolved with safe defaults
 
 
 ======================================================================
@@ -263,6 +282,7 @@ File: ui/import_panel.py
   - grid
   - invert X
   - stack offset (slider + spinbox)
+- Subscribes to plot_changed and syncs controls from AppState.
 
 9.3 Cosmic panel
 File: ui/cosmic_panel.py
@@ -272,6 +292,8 @@ File: ui/cosmic_panel.py
   - Apply cosmic / Reset cosmic (active spectrum)
   - Apply ALL / Reset ALL (all spectra)
 - Writes cosmic_clean_y and clears downstream caches.
+- Subscribes to cosmic_changed and syncs controls from AppState with
+  signal-blocked programmatic updates.
 
 9.4 Baseline panel
 File: ui/baseline_panel.py
@@ -282,6 +304,8 @@ File: ui/baseline_panel.py
   - Apply baseline / Reset baseline (active)
   - Apply ALL / Reset ALL
 - Writes baseline_y and processed_y.
+- Subscribes to baseline_changed and syncs controls from AppState with
+  signal-blocked programmatic updates.
 
 9.5 Smoothing panel
 File: ui/smoothing_panel.py
@@ -291,6 +315,7 @@ File: ui/smoothing_panel.py
   - Apply smoothing / Reset smoothing (active)
   - Apply ALL / Reset ALL
 - Writes smoothed_y.
+- Subscribes to smoothing_changed and syncs controls from AppState.
 
 9.6 Peaks panel
 File: ui/peaks_panel.py
@@ -309,6 +334,8 @@ File: ui/peaks_panel.py
 - Manual interactions via plot:
   - Ctrl+click: add manual peak
   - Shift+click: remove nearest peak
+- Subscribes to peaks_changed and syncs controls from AppState with
+  signal-blocked programmatic updates.
 
 9.7 Graphics panel
 File: ui/graphics_panel.py
@@ -322,6 +349,8 @@ File: ui/graphics_panel.py
   - tick label visibility
   - grid visibility
   - export canvas width/height
+- Subscribes to graphics_changed and syncs all controls from AppState with
+  signal-blocked programmatic updates.
 
 9.8 Plot widget
 File: ui/plot_widget.py
@@ -361,6 +390,7 @@ File: ui/presets_panel.py
   - Export all presets to JSON
   - Import presets from JSON
 - Loads saved presets on panel initialization.
+- Apply action uses core.apply_preset_payload(...) as the single restore path.
 
 
 ======================================================================
@@ -382,7 +412,14 @@ Stored as JSON array of objects:
       "baseline": {...},
       "smoothing": {...},
       "cosmic": {...},
-      "peaks": {...}
+      "peaks": {...},
+      "pipeline": {
+        "cosmic_applied": true,
+        "baseline_applied": true,
+        "smoothing_applied": true,
+        "auto_peaks_applied": true,
+        "raw_only": false
+      }
     }
   }
 ]
@@ -391,6 +428,7 @@ Notes:
 - Unknown keys are ignored by AppState setters.
 - Presets currently do not include loaded spectra data itself; only settings.
 - Import currently appends presets (no automatic deduplication by name/id).
+- Older preset JSON without payload.pipeline is handled safely.
 
 
 ======================================================================
@@ -451,6 +489,14 @@ No CLI interface is implemented; this is GUI-first.
 4. SpectrumPlotWidget receives signals and redraws.
 5. Export panel and other consumers read current state/caches when needed.
 
+Preset Apply flow:
+1. PresetsPanel calls core.apply_preset_payload(state, payload).
+2. Preset settings are restored via AppState set_* methods.
+3. Processing pipeline caches are rebuilt/cleared in order:
+   cosmic -> baseline -> smoothing -> auto peaks.
+4. State signals fire (including spectra_changed/peaks_changed).
+5. Plot redraws and preset-backed UI panels refresh controls from AppState.
+
 
 ======================================================================
 14) KNOWN LIMITATIONS / IMPLEMENTATION NOTES
@@ -492,4 +538,8 @@ When updating this file in the future:
 Change log:
 - 2026-03-10: Initial version created. Includes Presets system integration
   (core/presets.py, ui/presets_panel.py, sidebar wiring).
-
+- 2026-03-10: Preset apply upgraded to full state materialization for currently
+  loaded spectra (pipeline flags + ordered recomputation/clearing in
+  core/presets.py).
+- 2026-03-10: UI synchronization after preset apply added across preset-backed
+  panels via AppState signal subscriptions and signal-blocked sync methods.
