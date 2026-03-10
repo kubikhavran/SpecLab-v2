@@ -12,11 +12,37 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from core.spa_parser import SPAParseError, parse_spa_file
 
 
 _NUM_RE = re.compile(r"^[+\-\d.]")
 _DELIMITERS = ["\t", ",", ";", r"\s+"]
+
+
+class SpectrumParseError(Exception):
+    """Raised when a spectrum file cannot be parsed safely."""
+
+
+@dataclass(frozen=True)
+class ImportedPeakData:
+    """Peak entry parsed from an imported file."""
+
+    x: float
+    label: str = ""
+
+
+@dataclass
+class ParsedSpectrumData:
+    """Normalized parsed spectrum payload used by UI import flows."""
+
+    x: List[float]
+    y: List[float]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    imported_peaks: List[ImportedPeakData] = field(default_factory=list)
 
 
 def _try_split(line: str, delimiter: str) -> List[str]:
@@ -92,6 +118,44 @@ def parse_spectrum_text(text: str) -> Optional[Tuple[List[float], List[float]]]:
         return None
 
     return xs, ys
+
+
+def parse_spectrum_file(filepath: str) -> Optional[ParsedSpectrumData]:
+    """
+    Parse one spectrum file based on extension.
+
+    Supported:
+      - text-like files (.txt, .csv, .tsv, .dat, .asc, .xy, .spc)
+      - OMNIC SPA binary files (.spa)
+    """
+    ext = Path(filepath).suffix.lower()
+
+    if ext == ".spa":
+        try:
+            parsed = parse_spa_file(filepath)
+        except SPAParseError as exc:
+            raise SpectrumParseError(str(exc)) from exc
+        return ParsedSpectrumData(
+            x=parsed.x,
+            y=parsed.y,
+            metadata=dict(parsed.metadata),
+            imported_peaks=[
+                ImportedPeakData(x=peak.x, label=peak.label)
+                for peak in parsed.peaks
+            ],
+        )
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        raise SpectrumParseError(f"Cannot read file: {exc}") from exc
+
+    result = parse_spectrum_text(text)
+    if result is None:
+        return None
+    xs, ys = result
+    return ParsedSpectrumData(x=xs, y=ys)
 
 
 def extract_label_from_filename(filepath: str) -> str:

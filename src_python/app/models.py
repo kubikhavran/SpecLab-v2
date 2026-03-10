@@ -63,6 +63,7 @@ class Peak:
     id: str = field(default_factory=_new_id)
     x: float = 0.0
     source: str = "auto"        # "auto" | "manual"
+    label: Optional[str] = None
     i: Optional[int] = None
     kind: str = "max"           # "max" | "min"
     prominence: Optional[float] = None

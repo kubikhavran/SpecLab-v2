@@ -124,11 +124,21 @@ class AppState(QObject):
 
     # ── Spectrum mutations ─────────────────────────────────
 
-    def add_spectrum(self, spectrum: Spectrum) -> None:
+    def add_spectrum(
+        self,
+        spectrum: Spectrum,
+        imported_peaks: Optional[List[Peak]] = None,
+    ) -> None:
         self._spectra.append(spectrum)
+        if imported_peaks:
+            self.peaks_manual[spectrum.id] = list(imported_peaks)
+            # Imported labels should be visible immediately.
+            self._peaks.enabled = True
         self._active_spectrum_id = spectrum.id
         self.spectra_changed.emit()
         self.active_spectrum_changed.emit()
+        if imported_peaks:
+            self.peaks_changed.emit()
 
     def remove_spectrum(self, spectrum_id: str) -> None:
         self._spectra = [s for s in self._spectra if s.id != spectrum_id]

@@ -1,9 +1,11 @@
 """
-Import / Data panel — load spectrum files and manage the spectrum list.
+Import/Data panel: load spectrum files and manage the spectrum list.
 Equivalent of ImportSpectrum.tsx + SpectrumList.tsx.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -12,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -19,12 +22,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.models import Spectrum
+from app.models import Peak, Spectrum
 from app.state import AppState
-from core.spectrum_parser import extract_label_from_filename, parse_spectrum_text
+from core.spectrum_parser import (
+    SpectrumParseError,
+    extract_label_from_filename,
+    parse_spectrum_file,
+)
 
 
-_FILE_FILTER = "Spectrum files (*.txt *.csv *.tsv *.dat *.asc);;All files (*)"
+_FILE_FILTER = (
+    "Spectrum files (*.txt *.csv *.tsv *.dat *.asc *.xy *.spc *.spa);;All files (*)"
+)
 
 
 class ImportPanel(QWidget):
@@ -38,19 +47,18 @@ class ImportPanel(QWidget):
         self._refresh_list()
         self._sync_plot_controls_from_state()
 
-    # ── UI construction ────────────────────────────────────
-
+    # UI construction
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # ── Buttons row ──
+        # Buttons row
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self._btn_open = QPushButton("Open files…")
-        self._btn_open.setToolTip("Load one or more spectrum text files")
+        self._btn_open = QPushButton("Open files...")
+        self._btn_open.setToolTip("Load one or more spectrum files")
         btn_row.addWidget(self._btn_open)
 
         self._btn_remove = QPushButton("Remove")
@@ -65,15 +73,15 @@ class ImportPanel(QWidget):
 
         layout.addLayout(btn_row)
 
-        # ── Spectrum list ──
+        # Spectrum list
         self._list = QListWidget()
         self._list.setAlternatingRowColors(True)
         self._list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self._list.setMinimumHeight(80)
         layout.addWidget(self._list)
 
-        # ── Quick plot controls ──
-        from PySide6.QtWidgets import QCheckBox, QGroupBox, QFormLayout
+        # Quick plot controls
+        from PySide6.QtWidgets import QCheckBox, QFormLayout, QGroupBox
 
         plot_group = QGroupBox("Plot view")
         plot_form = QFormLayout(plot_group)
@@ -91,12 +99,10 @@ class ImportPanel(QWidget):
         self._chk_invert_x = QCheckBox("Invert X axis")
         plot_form.addRow(self._chk_invert_x)
 
-        # Stack offset — slider + spin box
-        from PySide6.QtWidgets import QSpinBox
+        # Stack offset: slider + spinbox
         offset_label = QLabel("Stack offset:")
         plot_form.addRow(offset_label)
 
-        from PySide6.QtWidgets import QSlider
         offset_inner = QHBoxLayout()
         self._offset_slider = QSlider(Qt.Orientation.Horizontal)
         self._offset_slider.setRange(0, 10000)
@@ -108,16 +114,14 @@ class ImportPanel(QWidget):
         self._offset_spin.setRange(0, 999999)
         self._offset_spin.setSingleStep(100)
         self._offset_spin.setValue(0)
-        self._offset_spin.setToolTip("Type any value, or use the slider (0–10 000)")
-        self._offset_spin.setFixedWidth(80)
+        self._offset_spin.setToolTip("Type any value, or use slider range 0-10000")
+        self._offset_spin.setFixedWidth(90)
         offset_inner.addWidget(self._offset_spin)
 
         plot_form.addRow(offset_inner)
-
         layout.addWidget(plot_group)
 
-    # ── Signal wiring ──────────────────────────────────────
-
+    # Signal wiring
     def _connect_signals(self) -> None:
         self._btn_open.clicked.connect(self._on_open_files)
         self._btn_remove.clicked.connect(self._on_remove)
@@ -129,7 +133,7 @@ class ImportPanel(QWidget):
         self._state.active_spectrum_changed.connect(self._sync_selection)
         self._state.plot_changed.connect(self._sync_plot_controls_from_state)
 
-        # Plot controls → state
+        # Plot controls -> state
         self._chk_overlay.toggled.connect(
             lambda checked: self._state.set_plot(show_all_spectra=checked)
         )
@@ -139,7 +143,7 @@ class ImportPanel(QWidget):
         self._chk_invert_x.toggled.connect(
             lambda checked: self._state.set_plot(invert_x=checked)
         )
-        # Stack offset — keep slider, spin, and state in sync
+
         def _on_offset_slider(val: int) -> None:
             self._offset_spin.blockSignals(True)
             self._offset_spin.setValue(val)
@@ -178,8 +182,7 @@ class ImportPanel(QWidget):
             self._offset_slider.blockSignals(False)
             self._offset_spin.blockSignals(False)
 
-    # ── Slots ──────────────────────────────────────────────
-
+    # Slots
     def _on_open_files(self) -> None:
         start_dir = self._state.last_folder("import")
         paths, _ = QFileDialog.getOpenFileNames(
@@ -190,24 +193,37 @@ class ImportPanel(QWidget):
         )
         if not paths:
             return
-        if paths:
-            self._state.set_last_folder(paths[0], "import")
 
+        self._state.set_last_folder(paths[0], "import")
+
+        errors: list[str] = []
         for path in paths:
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    text = fh.read()
-            except OSError:
+                parsed = parse_spectrum_file(path)
+            except SpectrumParseError as exc:
+                errors.append(f"{Path(path).name}: {exc}")
                 continue
 
-            result = parse_spectrum_text(text)
-            if result is None:
+            if parsed is None:
                 continue
 
-            xs, ys = result
             name = extract_label_from_filename(path)
-            spectrum = Spectrum(name=name, x=xs, y=ys, meta={"sourcePath": path, "sourceName": name})
-            self._state.add_spectrum(spectrum)
+            meta = {"sourcePath": path, "sourceName": name}
+            meta.update(parsed.metadata)
+
+            imported_peaks = [
+                Peak(x=peak.x, source="manual", label=peak.label or None)
+                for peak in parsed.imported_peaks
+            ]
+
+            spectrum = Spectrum(name=name, x=parsed.x, y=parsed.y, meta=meta)
+            self._state.add_spectrum(spectrum, imported_peaks=imported_peaks)
+
+        if errors:
+            details = "\n".join(errors[:8])
+            if len(errors) > 8:
+                details += f"\n... and {len(errors) - 8} more"
+            QMessageBox.warning(self, "Some files could not be imported", details)
 
     def _on_remove(self) -> None:
         sid = self._state.active_spectrum_id
@@ -222,8 +238,7 @@ class ImportPanel(QWidget):
         if 0 <= row < len(spectra):
             self._state.set_active_spectrum(spectra[row].id)
 
-    # ── List refresh ───────────────────────────────────────
-
+    # List refresh
     def _refresh_list(self) -> None:
         self._list.blockSignals(True)
         self._list.clear()
@@ -240,7 +255,6 @@ class ImportPanel(QWidget):
             self._list.addItem(item)
 
         self._list.blockSignals(False)
-
         self._sync_selection()
         self._btn_remove.setEnabled(len(spectra) > 0)
         self._btn_clear.setEnabled(len(spectra) > 0)
@@ -253,13 +267,12 @@ class ImportPanel(QWidget):
             item = self._list.item(i)
             if item and item.data(Qt.ItemDataRole.UserRole) == active_id:
                 self._list.setCurrentRow(i)
-                # Update bold
                 font = item.font()
                 font.setBold(True)
                 item.setFont(font)
-            else:
-                if item:
-                    font = item.font()
-                    font.setBold(False)
-                    item.setFont(font)
+            elif item:
+                font = item.font()
+                font.setBold(False)
+                item.setFont(font)
         self._list.blockSignals(False)
+

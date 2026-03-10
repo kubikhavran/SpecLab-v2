@@ -244,7 +244,7 @@ class SpectrumPlotWidget(QWidget):
 
                     if ps.show_labels:
                         decimals = ps.decimals
-                        label_text = f"{px:.{decimals}f}"
+                        label_text = peak.label.strip() if peak.label else f"{px:.{decimals}f}"
                         txt = pg.TextItem(
                             text=label_text,
                             color="#ef4444",
