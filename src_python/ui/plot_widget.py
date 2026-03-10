@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPen
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from app.models import SPECTRAL_MODES
 from app.state import AppState
 from core.palettes import get_color_for_index, get_palette_colors
 
@@ -108,6 +109,7 @@ class SpectrumPlotWidget(QWidget):
         self._state.smoothing_changed.connect(self._redraw)
         self._state.cosmic_changed.connect(self._redraw)
         self._state.peaks_changed.connect(self._redraw)
+        self._state.spectral_mode_changed.connect(self._redraw)
 
     # ── Core drawing ───────────────────────────────────────
 
@@ -244,7 +246,16 @@ class SpectrumPlotWidget(QWidget):
 
                     if ps.show_labels:
                         decimals = ps.decimals
-                        label_text = peak.label.strip() if peak.label else f"{px:.{decimals}f}"
+                        mode_defaults = SPECTRAL_MODES.get(state.spectral_mode)
+                        use_imported = (
+                            mode_defaults.peak_label_use_imported
+                            if mode_defaults
+                            else True
+                        )
+                        if peak.label and use_imported:
+                            label_text = peak.label.strip()
+                        else:
+                            label_text = f"{px:.{decimals}f}"
                         txt = pg.TextItem(
                             text=label_text,
                             color="#ef4444",

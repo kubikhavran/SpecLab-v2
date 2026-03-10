@@ -106,6 +106,7 @@ Primary state buckets:
   - _peaks: PeaksSettings
   - _graphics: GraphicsSettings
   - _export: ExportSettings
+  - _spectral_mode: str
 - Last-used directories:
   - _last_folders: dict[str, str]
 - Per-spectrum derived data caches:
@@ -126,6 +127,7 @@ Signals:
 - peaks_changed
 - graphics_changed
 - export_changed
+- spectral_mode_changed
 
 Important helper:
 - displayed_y(spectrum_id):
@@ -139,6 +141,13 @@ Important import behavior:
     - stores them in peaks_manual[spectrum.id]
     - sets peaks_settings.enabled = True
     - emits peaks_changed
+
+Spectral mode behavior:
+- set_spectral_mode(mode, apply_defaults=True)
+  - validates mode key against SPECTRAL_MODES
+  - stores active mode string
+  - optionally applies technique defaults to graphics/plot/baseline/peaks
+  - emits spectral_mode_changed
 
 
 ======================================================================
@@ -171,6 +180,13 @@ Settings:
   frame mode(open/box), trace width, font options, palette, canvas export size
 - ExportSettings:
   filename, folder
+- SpectralModeDefaults:
+  recommended defaults for technique profiles:
+  x/y labels, invert_x, baseline lambda/p/iterations, peak polarity,
+  peak prominence, decimals, imported-label policy
+- Global mode registries:
+  - SPECTRAL_MODES: Dict[str, SpectralModeDefaults]
+  - SPECTRAL_MODE_LABELS: Dict[str, str]
 
 
 ======================================================================
@@ -308,6 +324,11 @@ File: core/presets.py
 ======================================================================
 9.1 Sidebar
 File: ui/sidebar.py
+- Top toolbar contains Spectral Mode selector (Raman, Infrared, UV-Vis, Custom).
+- Switching mode applies recommended defaults for:
+  axis labels, X inversion, baseline params, peak polarity/prominence/decimals,
+  and imported-label usage policy.
+- Selector stays synced with AppState.spectral_mode via spectral_mode_changed.
 - Collapsible accordion sections in this order:
   - Data
   - Cosmic rays
@@ -352,7 +373,7 @@ File: ui/cosmic_panel.py
 9.4 Baseline panel
 File: ui/baseline_panel.py
 - Parameter controls:
-  - lambda (log scale), p, iterations
+  - lambda (log scale 1e2..1e9), p (0.001..0.999), iterations
   - show baseline overlay
 - Actions:
   - Apply baseline / Reset baseline (active)
@@ -376,6 +397,7 @@ File: ui/peaks_panel.py
 - Controls:
   - enable peaks
   - mode active/all
+  - polarity max/min/both
   - min prominence
   - min distance
   - max peaks
@@ -621,3 +643,11 @@ Change log:
   - .spa enabled in file dialog and drag-drop
   - imported SPA peak labels mapped into peaks_manual and shown immediately
   - Peak model extended with optional label field
+- 2026-03-11: Added Spectral Mode system:
+  - model registry for Raman/Infrared/UV-Vis/Custom defaults
+  - AppState spectral_mode state + signal + default-application path
+  - sidebar mode selector synced with state
+  - baseline UI range extended (lambda down to 1e2, p up to 0.999)
+  - peaks panel polarity selector wired to PeaksSettings.polarity
+  - plot peak labels now respect per-mode imported-label policy
+  - presets persist/restore spectral_mode without overwriting explicit payload values

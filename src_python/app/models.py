@@ -128,3 +128,78 @@ class GraphicsSettings:
 class ExportSettings:
     filename: str = ""
     folder: str = ""
+
+
+@dataclass
+class SpectralModeDefaults:
+    """Recommended defaults for a spectral technique."""
+
+    x_label: str = "X"
+    y_label: str = "Y"
+    invert_x: bool = False
+    baseline_lambda: float = 1e6
+    baseline_p: float = 0.01
+    baseline_iterations: int = 10
+    peak_polarity: str = "max"        # "max" | "min" | "both"
+    peak_min_prominence: float = 20.0
+    peak_decimals: int = 0
+    peak_label_use_imported: bool = True
+
+
+SPECTRAL_MODES: Dict[str, SpectralModeDefaults] = {
+    "raman": SpectralModeDefaults(
+        x_label="Raman shift (cm⁻¹)",
+        y_label="Intensity (a.u.)",
+        invert_x=True,
+        baseline_lambda=1e6,
+        baseline_p=0.01,
+        baseline_iterations=10,
+        peak_polarity="max",
+        peak_min_prominence=20,
+        peak_decimals=0,
+        peak_label_use_imported=False,
+    ),
+    "infrared": SpectralModeDefaults(
+        x_label="Wavenumber (cm⁻¹)",
+        y_label="Transmittance (%)",
+        invert_x=True,
+        baseline_lambda=1e4,
+        baseline_p=0.999,
+        baseline_iterations=10,
+        peak_polarity="min",
+        peak_min_prominence=5,
+        peak_decimals=0,
+        peak_label_use_imported=False,
+    ),
+    "uv_vis": SpectralModeDefaults(
+        x_label="Wavelength (nm)",
+        y_label="Absorbance",
+        invert_x=False,
+        baseline_lambda=1e5,
+        baseline_p=0.01,
+        baseline_iterations=10,
+        peak_polarity="max",
+        peak_min_prominence=0.01,
+        peak_decimals=1,
+        peak_label_use_imported=False,
+    ),
+    "custom": SpectralModeDefaults(
+        x_label="X",
+        y_label="Y",
+        invert_x=False,
+        baseline_lambda=1e6,
+        baseline_p=0.01,
+        baseline_iterations=10,
+        peak_polarity="max",
+        peak_min_prominence=20,
+        peak_decimals=0,
+        peak_label_use_imported=True,
+    ),
+}
+
+SPECTRAL_MODE_LABELS: Dict[str, str] = {
+    "raman": "Raman",
+    "infrared": "Infrared (IR)",
+    "uv_vis": "UV-Vis",
+    "custom": "Custom",
+}

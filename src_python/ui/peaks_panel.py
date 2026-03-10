@@ -50,6 +50,19 @@ class PeaksPanel(QWidget):
         mode_row.addWidget(self._combo_mode)
         layout.addLayout(mode_row)
 
+        # Polarity: max / min / both
+        pol_row = QHBoxLayout()
+        pol_row.addWidget(QLabel("Polarity:"))
+        self._combo_polarity = QComboBox()
+        self._combo_polarity.addItems(["max", "min", "both"])
+        self._combo_polarity.setToolTip(
+            "max = peaks (Raman, UV-Vis)\n"
+            "min = dips (IR transmittance)\n"
+            "both = peaks and dips"
+        )
+        pol_row.addWidget(self._combo_polarity)
+        layout.addLayout(pol_row)
+
         # Min prominence
         prom_row = QHBoxLayout()
         prom_row.addWidget(QLabel("Min prominence:"))
@@ -128,6 +141,9 @@ class PeaksPanel(QWidget):
     def _connect_signals(self) -> None:
         self._chk_enabled.toggled.connect(lambda c: self._state.set_peaks(enabled=c))
         self._combo_mode.currentTextChanged.connect(lambda t: self._state.set_peaks(mode=t))
+        self._combo_polarity.currentTextChanged.connect(
+            lambda t: self._state.set_peaks(polarity=t)
+        )
         self._prom_spin.valueChanged.connect(lambda v: self._state.set_peaks(min_prominence=v))
         self._dist_spin.valueChanged.connect(lambda v: self._state.set_peaks(min_distance=v))
         self._mp_spin.valueChanged.connect(lambda v: self._state.set_peaks(max_peaks=v))
@@ -151,6 +167,7 @@ class PeaksPanel(QWidget):
         widgets = [
             self._chk_enabled,
             self._combo_mode,
+            self._combo_polarity,
             self._prom_spin,
             self._dist_spin,
             self._mp_spin,
@@ -164,6 +181,7 @@ class PeaksPanel(QWidget):
         try:
             self._chk_enabled.setChecked(p.enabled)
             self._combo_mode.setCurrentText(p.mode)
+            self._combo_polarity.setCurrentText(p.polarity)
             self._prom_spin.setValue(int(p.min_prominence))
             self._dist_spin.setValue(p.min_distance)
             self._mp_spin.setValue(p.max_peaks)

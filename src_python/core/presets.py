@@ -262,6 +262,7 @@ class Preset:
 def capture_preset_payload(state) -> Dict[str, Any]:
     """Capture current settings from AppState into a preset payload dict."""
     return {
+        "spectral_mode": state.spectral_mode,
         "plot": _dataclass_to_dict(state.plot),
         "graphics": _dataclass_to_dict(state.graphics),
         "baseline": _dataclass_to_dict(state.baseline),
@@ -285,6 +286,10 @@ def apply_preset_payload(state, payload: Dict[str, Any]) -> None:
     smoothing_payload = _payload_section(payload, "smoothing")
     cosmic_payload = _payload_section(payload, "cosmic")
     peaks_payload = _payload_section(payload, "peaks")
+
+    mode = payload.get("spectral_mode", "custom")
+    if isinstance(mode, str):
+        state.set_spectral_mode(mode, apply_defaults=False)
 
     if plot_payload:
         state.set_plot(**plot_payload)

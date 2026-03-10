@@ -1,6 +1,5 @@
 """
-Baseline correction panel — AsLS baseline estimation and subtraction.
-Equivalent of BaselinePanel.tsx.
+Baseline correction panel: AsLS baseline estimation and subtraction.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from app.state import AppState
 from core.baseline import apply_baseline, asls_baseline
 
 
-LAMBDA_EXP_MIN = 4
+LAMBDA_EXP_MIN = 2
 LAMBDA_EXP_MAX = 9
 
 
@@ -40,12 +39,10 @@ class BaselinePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Show overlay checkbox
         self._chk_overlay = QCheckBox("Show baseline overlay")
         self._chk_overlay.setChecked(True)
         layout.addWidget(self._chk_overlay)
 
-        # Lambda slider
         lam_row = QHBoxLayout()
         lam_row.addWidget(QLabel("Lambda:"))
         self._lam_label = QLabel("1e6")
@@ -60,7 +57,6 @@ class BaselinePanel(QWidget):
         self._lam_slider.setTickInterval(1)
         layout.addWidget(self._lam_slider)
 
-        # p slider
         p_row = QHBoxLayout()
         p_row.addWidget(QLabel("p:"))
         self._p_label = QLabel("0.010")
@@ -69,11 +65,10 @@ class BaselinePanel(QWidget):
         layout.addLayout(p_row)
 
         self._p_slider = QSlider(Qt.Orientation.Horizontal)
-        self._p_slider.setRange(1, 100)   # maps to 0.001 – 0.100
-        self._p_slider.setValue(10)        # 0.010
+        self._p_slider.setRange(1, 999)
+        self._p_slider.setValue(10)
         layout.addWidget(self._p_slider)
 
-        # Iterations slider
         iter_row = QHBoxLayout()
         iter_row.addWidget(QLabel("Iterations:"))
         self._iter_label = QLabel("10")
@@ -86,7 +81,6 @@ class BaselinePanel(QWidget):
         self._iter_slider.setValue(10)
         layout.addWidget(self._iter_slider)
 
-        # Buttons
         btn_row1 = QHBoxLayout()
         self._btn_apply = QPushButton("Apply baseline")
         self._btn_reset = QPushButton("Reset baseline")
@@ -112,12 +106,14 @@ class BaselinePanel(QWidget):
         self._btn_apply_all.clicked.connect(self._on_apply_all)
         self._btn_reset_all.clicked.connect(self._on_reset_all)
 
-        # Keep controls synced after external state updates (e.g. presets).
         self._state.baseline_changed.connect(self._sync_from_state)
 
     def _sync_from_state(self) -> None:
         b = self._state.baseline
-        exp = max(LAMBDA_EXP_MIN, min(LAMBDA_EXP_MAX, round(np.log10(max(b.lambda_, 10**LAMBDA_EXP_MIN)))))
+        exp = max(
+            LAMBDA_EXP_MIN,
+            min(LAMBDA_EXP_MAX, round(np.log10(max(b.lambda_, 10**LAMBDA_EXP_MIN)))),
+        )
         self._lam_slider.blockSignals(True)
         self._p_slider.blockSignals(True)
         self._iter_slider.blockSignals(True)
@@ -139,8 +135,6 @@ class BaselinePanel(QWidget):
             self._iter_slider.blockSignals(False)
             self._chk_overlay.blockSignals(False)
 
-    # ── Slider handlers ────────────────────────────────────
-
     def _on_lambda_changed(self, exp: int) -> None:
         lam = 10 ** exp
         self._lam_label.setText(f"1e{exp}")
@@ -158,16 +152,13 @@ class BaselinePanel(QWidget):
     def _on_overlay_toggled(self, checked: bool) -> None:
         self._state.set_baseline(show_overlay=checked)
 
-    # ── Apply / Reset ──────────────────────────────────────
-
     def _compute_and_store(self, spectrum_id: str, y_input: np.ndarray) -> None:
         """Run AsLS and store results in state."""
         b = self._state.baseline
-        bl = asls_baseline(y_input, lam=b.lambda_, p=b.p, n_iter=b.iterations)
-        corrected = apply_baseline(y_input, bl)
+        baseline = asls_baseline(y_input, lam=b.lambda_, p=b.p, n_iter=b.iterations)
+        corrected = apply_baseline(y_input, baseline)
         self._state.processed_y[spectrum_id] = corrected.tolist()
-        self._state.baseline_y[spectrum_id] = bl.tolist()
-        # Clear downstream (smoothing depends on baseline)
+        self._state.baseline_y[spectrum_id] = baseline.tolist()
         self._state.smoothed_y.pop(spectrum_id, None)
 
     def _on_apply(self) -> None:
@@ -175,11 +166,12 @@ class BaselinePanel(QWidget):
         if spec is None:
             return
         y_input = np.array(
-            self._state.cosmic_clean_y.get(spec.id, spec.y), dtype=np.float64
+            self._state.cosmic_clean_y.get(spec.id, spec.y),
+            dtype=np.float64,
         )
         self._compute_and_store(spec.id, y_input)
         self._state.set_baseline(enabled=True)
-        self._state.spectra_changed.emit()   # trigger plot redraw
+        self._state.spectra_changed.emit()
 
     def _on_reset(self) -> None:
         spec = self._state.active_spectrum
@@ -194,7 +186,8 @@ class BaselinePanel(QWidget):
     def _on_apply_all(self) -> None:
         for spec in self._state.spectra:
             y_input = np.array(
-                self._state.cosmic_clean_y.get(spec.id, spec.y), dtype=np.float64
+                self._state.cosmic_clean_y.get(spec.id, spec.y),
+                dtype=np.float64,
             )
             self._compute_and_store(spec.id, y_input)
         self._state.set_baseline(enabled=True)
@@ -206,3 +199,4 @@ class BaselinePanel(QWidget):
         self._state.smoothed_y.clear()
         self._state.set_baseline(enabled=False)
         self._state.spectra_changed.emit()
+
