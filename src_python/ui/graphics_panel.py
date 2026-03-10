@@ -201,6 +201,9 @@ class GraphicsPanel(QWidget):
         self._spin_export_w.valueChanged.connect(lambda v: s.set_graphics(export_width=v))
         self._spin_export_h.valueChanged.connect(lambda v: s.set_graphics(export_height=v))
 
+        # Keep widget values in sync when state is changed externally (e.g. presets).
+        s.graphics_changed.connect(self._sync_from_state)
+
     def _on_palette_changed(self, index: int) -> None:
         value = self._combo_palette.itemData(index)
         if value:
@@ -208,34 +211,59 @@ class GraphicsPanel(QWidget):
 
     def _sync_from_state(self) -> None:
         g = self._state.graphics
+        widgets = [
+            self._x_label,
+            self._y_label,
+            self._chk_axis_bold,
+            self._chk_axis_italic,
+            self._combo_font,
+            self._spin_base_font,
+            self._spin_tick_font,
+            self._chk_tick_bold,
+            self._chk_tick_italic,
+            self._spin_trace_width,
+            self._spin_axis_width,
+            self._combo_frame,
+            self._combo_palette,
+            self._chk_show_x_ticks,
+            self._chk_show_y_ticks,
+            self._chk_grid,
+            self._spin_export_w,
+            self._spin_export_h,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self._x_label.setText(g.x_label)
+            self._y_label.setText(g.y_label)
+            self._chk_axis_bold.setChecked(g.axis_label_bold)
+            self._chk_axis_italic.setChecked(g.axis_label_italic)
 
-        self._x_label.setText(g.x_label)
-        self._y_label.setText(g.y_label)
-        self._chk_axis_bold.setChecked(g.axis_label_bold)
-        self._chk_axis_italic.setChecked(g.axis_label_italic)
+            idx = self._combo_font.findText(g.font_family)
+            if idx >= 0:
+                self._combo_font.setCurrentIndex(idx)
+            self._spin_base_font.setValue(g.base_font_size)
+            self._spin_tick_font.setValue(g.tick_font_size)
+            self._chk_tick_bold.setChecked(g.tick_label_bold)
+            self._chk_tick_italic.setChecked(g.tick_label_italic)
 
-        idx = self._combo_font.findText(g.font_family)
-        if idx >= 0:
-            self._combo_font.setCurrentIndex(idx)
-        self._spin_base_font.setValue(g.base_font_size)
-        self._spin_tick_font.setValue(g.tick_font_size)
-        self._chk_tick_bold.setChecked(g.tick_label_bold)
-        self._chk_tick_italic.setChecked(g.tick_label_italic)
+            self._spin_trace_width.setValue(g.trace_line_width)
+            self._spin_axis_width.setValue(g.axis_line_width)
+            idx_frame = self._combo_frame.findText(g.frame_mode)
+            if idx_frame >= 0:
+                self._combo_frame.setCurrentIndex(idx_frame)
 
-        self._spin_trace_width.setValue(g.trace_line_width)
-        self._spin_axis_width.setValue(g.axis_line_width)
-        idx_frame = self._combo_frame.findText(g.frame_mode)
-        if idx_frame >= 0:
-            self._combo_frame.setCurrentIndex(idx_frame)
+            for i in range(self._combo_palette.count()):
+                if self._combo_palette.itemData(i) == g.palette:
+                    self._combo_palette.setCurrentIndex(i)
+                    break
 
-        for i in range(self._combo_palette.count()):
-            if self._combo_palette.itemData(i) == g.palette:
-                self._combo_palette.setCurrentIndex(i)
-                break
+            self._chk_show_x_ticks.setChecked(g.show_x_tick_labels)
+            self._chk_show_y_ticks.setChecked(g.show_y_tick_labels)
+            self._chk_grid.setChecked(g.show_grid)
 
-        self._chk_show_x_ticks.setChecked(g.show_x_tick_labels)
-        self._chk_show_y_ticks.setChecked(g.show_y_tick_labels)
-        self._chk_grid.setChecked(g.show_grid)
-
-        self._spin_export_w.setValue(g.export_width)
-        self._spin_export_h.setValue(g.export_height)
+            self._spin_export_w.setValue(g.export_width)
+            self._spin_export_h.setValue(g.export_height)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)

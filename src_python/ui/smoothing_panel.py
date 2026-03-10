@@ -89,6 +89,9 @@ class SmoothingPanel(QWidget):
         self._btn_apply_all.clicked.connect(self._on_apply_all)
         self._btn_reset_all.clicked.connect(self._on_reset_all)
 
+        # Keep controls synced after external state updates (e.g. presets).
+        self._state.smoothing_changed.connect(self._sync_from_state)
+
     def _sync_from_state(self) -> None:
         s = self._state.smoothing
         w = s.window

@@ -143,17 +143,37 @@ class PeaksPanel(QWidget):
         self._btn_detect_all.clicked.connect(self._on_detect_all)
         self._btn_clear_all.clicked.connect(self._on_clear_all)
 
+        # Keep controls synced after external state updates (e.g. presets).
+        self._state.peaks_changed.connect(self._sync_from_state)
+
     def _sync_from_state(self) -> None:
         p = self._state.peaks_settings
-        self._chk_enabled.setChecked(p.enabled)
-        self._combo_mode.setCurrentText(p.mode)
-        self._prom_spin.setValue(int(p.min_prominence))
-        self._dist_spin.setValue(p.min_distance)
-        self._mp_spin.setValue(p.max_peaks)
-        self._dec_spin.setValue(p.decimals)
-        self._chk_markers.setChecked(p.show_markers)
-        self._chk_labels.setChecked(p.show_labels)
-        self._chk_manual.setChecked(p.manual_pick_enabled)
+        widgets = [
+            self._chk_enabled,
+            self._combo_mode,
+            self._prom_spin,
+            self._dist_spin,
+            self._mp_spin,
+            self._dec_spin,
+            self._chk_markers,
+            self._chk_labels,
+            self._chk_manual,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self._chk_enabled.setChecked(p.enabled)
+            self._combo_mode.setCurrentText(p.mode)
+            self._prom_spin.setValue(int(p.min_prominence))
+            self._dist_spin.setValue(p.min_distance)
+            self._mp_spin.setValue(p.max_peaks)
+            self._dec_spin.setValue(p.decimals)
+            self._chk_markers.setChecked(p.show_markers)
+            self._chk_labels.setChecked(p.show_labels)
+            self._chk_manual.setChecked(p.manual_pick_enabled)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
 
     def _get_display_y(self, spec) -> list:
         """Get the displayed Y for peak detection (follows processing chain)."""

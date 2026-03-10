@@ -127,30 +127,37 @@ class CosmicPanel(QWidget):
         self._btn_apply_all.clicked.connect(self._on_apply_all)
         self._btn_reset_all.clicked.connect(self._on_reset_all)
 
+        # Keep controls synced after external state updates (e.g. presets).
+        self._state.cosmic_changed.connect(self._sync_from_state)
+
     def _sync_from_state(self) -> None:
         c = self._state.cosmic
         w = c.window if c.window % 2 == 1 else c.window + 1
         self._win_slider.blockSignals(True)
-        self._win_slider.setValue(w)
-        self._win_slider.blockSignals(False)
-        self._win_label.setText(str(w))
-
         self._thr_slider.blockSignals(True)
-        self._thr_slider.setValue(int(c.threshold * 2))
-        self._thr_slider.blockSignals(False)
-        self._thr_label.setText(f"{c.threshold:.1f}")
-
         self._mw_slider.blockSignals(True)
-        self._mw_slider.setValue(c.max_width)
-        self._mw_slider.blockSignals(False)
-        self._mw_label.setText(str(c.max_width))
-
         self._iter_slider.blockSignals(True)
-        self._iter_slider.setValue(c.iterations)
-        self._iter_slider.blockSignals(False)
-        self._iter_label.setText(str(c.iterations))
+        self._chk_positive.blockSignals(True)
+        try:
+            self._win_slider.setValue(w)
+            self._win_label.setText(str(w))
 
-        self._chk_positive.setChecked(c.positive_only)
+            self._thr_slider.setValue(int(c.threshold * 2))
+            self._thr_label.setText(f"{c.threshold:.1f}")
+
+            self._mw_slider.setValue(c.max_width)
+            self._mw_label.setText(str(c.max_width))
+
+            self._iter_slider.setValue(c.iterations)
+            self._iter_label.setText(str(c.iterations))
+
+            self._chk_positive.setChecked(c.positive_only)
+        finally:
+            self._win_slider.blockSignals(False)
+            self._thr_slider.blockSignals(False)
+            self._mw_slider.blockSignals(False)
+            self._iter_slider.blockSignals(False)
+            self._chk_positive.blockSignals(False)
 
     def _on_win(self, val: int) -> None:
         if val % 2 == 0:

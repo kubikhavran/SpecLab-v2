@@ -36,6 +36,7 @@ class ImportPanel(QWidget):
         self._build_ui()
         self._connect_signals()
         self._refresh_list()
+        self._sync_plot_controls_from_state()
 
     # ── UI construction ────────────────────────────────────
 
@@ -126,6 +127,7 @@ class ImportPanel(QWidget):
         # React to state changes
         self._state.spectra_changed.connect(self._refresh_list)
         self._state.active_spectrum_changed.connect(self._sync_selection)
+        self._state.plot_changed.connect(self._sync_plot_controls_from_state)
 
         # Plot controls → state
         self._chk_overlay.toggled.connect(
@@ -152,6 +154,29 @@ class ImportPanel(QWidget):
 
         self._offset_slider.valueChanged.connect(_on_offset_slider)
         self._offset_spin.valueChanged.connect(_on_offset_spin)
+
+    def _sync_plot_controls_from_state(self) -> None:
+        """Sync quick plot controls from current PlotSettings."""
+        p = self._state.plot
+        offset_val = max(0, int(round(float(p.stack_offset))))
+
+        self._chk_overlay.blockSignals(True)
+        self._chk_grid.blockSignals(True)
+        self._chk_invert_x.blockSignals(True)
+        self._offset_slider.blockSignals(True)
+        self._offset_spin.blockSignals(True)
+        try:
+            self._chk_overlay.setChecked(bool(p.show_all_spectra))
+            self._chk_grid.setChecked(bool(p.show_grid))
+            self._chk_invert_x.setChecked(bool(p.invert_x))
+            self._offset_spin.setValue(offset_val)
+            self._offset_slider.setValue(min(offset_val, self._offset_slider.maximum()))
+        finally:
+            self._chk_overlay.blockSignals(False)
+            self._chk_grid.blockSignals(False)
+            self._chk_invert_x.blockSignals(False)
+            self._offset_slider.blockSignals(False)
+            self._offset_spin.blockSignals(False)
 
     # ── Slots ──────────────────────────────────────────────
 

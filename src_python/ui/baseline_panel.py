@@ -112,25 +112,32 @@ class BaselinePanel(QWidget):
         self._btn_apply_all.clicked.connect(self._on_apply_all)
         self._btn_reset_all.clicked.connect(self._on_reset_all)
 
+        # Keep controls synced after external state updates (e.g. presets).
+        self._state.baseline_changed.connect(self._sync_from_state)
+
     def _sync_from_state(self) -> None:
         b = self._state.baseline
         exp = max(LAMBDA_EXP_MIN, min(LAMBDA_EXP_MAX, round(np.log10(max(b.lambda_, 10**LAMBDA_EXP_MIN)))))
         self._lam_slider.blockSignals(True)
-        self._lam_slider.setValue(exp)
-        self._lam_slider.blockSignals(False)
-        self._lam_label.setText(f"1e{exp}")
-
         self._p_slider.blockSignals(True)
-        self._p_slider.setValue(round(b.p * 1000))
-        self._p_slider.blockSignals(False)
-        self._p_label.setText(f"{b.p:.3f}")
-
         self._iter_slider.blockSignals(True)
-        self._iter_slider.setValue(b.iterations)
-        self._iter_slider.blockSignals(False)
-        self._iter_label.setText(str(b.iterations))
+        self._chk_overlay.blockSignals(True)
+        try:
+            self._lam_slider.setValue(exp)
+            self._lam_label.setText(f"1e{exp}")
 
-        self._chk_overlay.setChecked(b.show_overlay)
+            self._p_slider.setValue(round(b.p * 1000))
+            self._p_label.setText(f"{b.p:.3f}")
+
+            self._iter_slider.setValue(b.iterations)
+            self._iter_label.setText(str(b.iterations))
+
+            self._chk_overlay.setChecked(b.show_overlay)
+        finally:
+            self._lam_slider.blockSignals(False)
+            self._p_slider.blockSignals(False)
+            self._iter_slider.blockSignals(False)
+            self._chk_overlay.blockSignals(False)
 
     # ── Slider handlers ────────────────────────────────────
 
