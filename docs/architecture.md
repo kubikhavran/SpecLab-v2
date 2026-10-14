@@ -27,3 +27,11 @@ Tento dokument popisuje aktuální desktopovou aplikaci Python/PySide6. Vstupní
 ## Testy
 
 Testy jsou v kořenové složce `tests/`: `test_state.py`, `test_processing.py`, `test_ai.py`, `test_project.py`, `test_imports.py`, `test_exports.py` a `test_studio.py`. `pytest.ini` přidává `src_python` do importní cesty.
+
+## Doplňky (2026-10-14)
+
+- `core/sampling.py`: detekce mezer v ose X (krok > 3× typický); používají ji zpracování (filtry po úsecích), detekce píků (po úsecích) a graf (`connect="finite"`).
+- `core/spa_parser.py`: píky z OMNIC – blok 104 (u32 počet; záznam u16 příznaky, f32 poloha píku, f32 poloha popisku, f32 intenzita, text NUL), záložně tabulka FIND PEAKS v bloku 130; NaN = vymazané oblasti.
+- `ui/plot_widget.py`: `place_labels` (hladové umístění bez kolizí, priorita podle prominence), `label_anchor`, rezerva rozsahu osy pro popisky; přepočet při `sigRangeChanged`/`sigResized` (i při exportu).
+- `core/presentation.py`: whitelist vzhledu pro AI (`graphics`, `peaks` vč. `relative_prominence`, `plot`, `detect_peaks`), aplikace přes `AppState.apply_presentation`.
+

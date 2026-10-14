@@ -26,7 +26,7 @@ python3 src_python/main.py soubor1.txt soubor2.wdf
 
 - **TXT, CSV, TSV, DAT, ASC, XY, DPT:** vícesloupcový import; první sloupec je X a každý další sloupec Y samostatného spektra. Podporuje citované CSV, desetinnou čárku u oddělovače středník/tabulátor/mezera a kódování UTF-8/UTF-16 s fallbackem CP1250. Chybné číselné řádky se odmítají; nejsou podporovány prokládané dvojice X/Y ani automatické odstraňování chybějících hodnot.
 - **WDF (Renishaw, WDF1):** základní float32 spektra se sdílenou osou, série a mapovací původní souřadnice. Multitrack, XYXY a filter images jsou odmítnuty; obrázky a fitované výsledky se neimportují.
-- **SPA (Thermo OMNIC):** čte primární spektrální payload při shodě hlavičky a délky dat, zachovává označené vložené textové píky jako heuristické. Interferogramy jsou odmítnuty.
+- **SPA (Thermo OMNIC):** čte primární spektrum při shodě hlavičky a délky dat. Popisky píků přebírá přesně z OMNIC (popisky zobrazené na spektru, jinak tabulka FIND PEAKS); historii úprav ani jiné texty souboru za píky nepovažuje. Oblasti vymazané v OMNIC (NaN, např. pásy nosné fólie) se načtou jako mezery a jejich rozsahy se uloží do metadat. Interferogramy jsou odmítnuty.
 - **SPC:** jedno float32 spektrum s rovnoměrnou nebo explicitní osou X. Integer-scaled, multifile, XYXY a interferogramy jsou odmítnuty; textový soubor s příponou SPC lze načíst jako text.
 - **JCAMP-DX:** AFFN/PAC XYDATA (`X++(Y..Y)`), XYPOINTS, škálovací faktory a více samostatných bloků. SQZ/DIF/DUP, NTUPLES a peak tables jsou odmítnuty s chybou.
 
@@ -47,9 +47,11 @@ Operace v místním zpracovatelském jádře:
 - **Shift:** posun os X a/nebo Y.
 - **Interpolate:** interpolace hodnot Y ve zvoleném rozsahu.
 
-Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav** a lze ji vrátit či znovu provést tlačítky **Zpět/Znovu** – to platí i pro import, odebrání a vymazání spekter. Původní importovaná data zůstávají zachována. Vyhlazení, korekce baseline a despike pracují po bodech a přijímají i mírně nerovnoměrné osy X (typické například pro Ramanovo CCD). Derivace vyžaduje rovnoměrnou osu X; jinak nejprve použijte **Převzorkování**.
+Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav** a lze ji vrátit či znovu provést tlačítky **Zpět/Znovu** – to platí i pro import, odebrání a vymazání spekter. Původní importovaná data zůstávají zachována. Vyhlazení, korekce baseline a despike pracují po bodech a přijímají i mírně nerovnoměrné osy X (typické například pro Ramanovo CCD); skutečné mezery v ose X (vymazané oblasti) dělí spektrum na úseky, které se zpracují samostatně a graf je nepřemostí čarou. Derivace vyžaduje rovnoměrnou osu X; jinak nejprve použijte **Převzorkování**.
 
 ## Píky
+
+Popisky píků se rozmisťují automaticky: zůstávají u svého pásu (u transmitance pod ním), při kolizi se posunou do strany nebo dál od křivky a připojí se lomenou vodicí čarou; výraznější pásy mají přednost. Popisek, který se nevejde, se skryje (zůstane značka) a objeví se po přiblížení. Ručně přetažený popisek si drží polohu vůči píku. Tlačítko **Auto** u rozestupu křivek rozestoupí překryv spekter tak, aby se nepřekrývala.
 
 Automatická detekce podporuje maxima, minima nebo obojí, minimální prominenci, minimální vzdálenost v jednotkách X a omezení na oblast X. Ruční výběr zapnete volbou **Ruční výběr**: Ctrl/⌘+kliknutí přidá pík, Shift+kliknutí poblíž píku jej odstraní. Popisky píků lze přetahovat. Tabulku píků lze tlačítkem **Kopírovat TSV** zkopírovat do schránky.
 
@@ -61,7 +63,7 @@ Soubor `*.speclab.json` ukládá původní i aktuální data, recepturu zpracov�
 
 API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej na kartě **AI**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte před spuštěním aplikace v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
 
-Na kartě AI zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí JSON plán povolených operací; pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**.
+Na kartě AI zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí JSON plán povolených operací a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů, odhad šumu), aby nevolila příliš široké vyhlazení.
 
 Odesílá se text zadání a kontext spektra: technika, typ Y, jednotka X, rozsahy X/Y a počet bodů. Je-li zaškrtnuta volba redukovaného náhledu, přidá se min/max obálka o nejvýše 258 bodech. Náhled neobsahuje názvy ani cesty souborů.
 

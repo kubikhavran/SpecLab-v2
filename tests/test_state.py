@@ -199,6 +199,16 @@ class StateTests(unittest.TestCase):
         self.state.undo()
         self.assertEqual(self.state.active_spectrum.y, [float(i + 1) for i in range(21)])
 
+    def test_detection_skips_bands_with_manual_labels(self):
+        x = list(range(100))
+        y = [float(np.exp(-((i - 30) / 3) ** 2) + np.exp(-((i - 70) / 3) ** 2)) for i in x]
+        spec = Spectrum(name='bands', x=x, y=y)
+        self.state.add_spectrum(spec)
+        self.state.set_peaks(min_prominence=0.1, min_distance=4)
+        self.state.add_manual_peak(spec.id, 30.5, label='imported')
+        self.state.detect_spectrum_peaks([spec.id])
+        self.assertEqual([p.x for p in self.state.peaks_auto[spec.id]], [70.0])
+
     def test_batch_add_is_atomic(self):
         good = Spectrum(name='good', x=[1, 2, 3], y=[1, 2, 3])
         bad = Spectrum(name='bad', x=[1, 1, 2], y=[1, 2, 3])

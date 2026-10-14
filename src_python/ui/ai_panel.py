@@ -58,6 +58,7 @@ class AIPanel(QWidget):
         self._proposal_ids = None
         self._proposal_source = "manual"
         self._own_preview_id = None
+        self._plan = None
         self._build()
         state.preview_changed.connect(self._sync_apply)
         state.spectra_changed.connect(self._sync_apply)
@@ -159,9 +160,19 @@ class AIPanel(QWidget):
         spec = self.state.active_spectrum
         if spec is None:
             raise ValueError("Nejprve vyber spektrum.")
-        return spectrum_context(
+        context = spectrum_context(
             spec, self.state.displayed_y(spec.id), self.samples.isChecked()
         )
+        # Current figure state lets the model improve rather than replace it.
+        graphics, peaks = self.state.graphics, self.state.peaks_settings
+        context["figure"] = {
+            "x_label": graphics.x_label, "y_label": graphics.y_label,
+            "font_family": graphics.font_family, "palette": graphics.palette,
+            "peak_polarity": peaks.polarity, "peak_min_prominence": peaks.min_prominence,
+            "peaks_shown": len(self.state.peaks_auto.get(spec.id, []))
+            + len(self.state.peaks_manual.get(spec.id, [])),
+        }
+        return context
 
     def _show_context(self):
         try:
@@ -316,10 +327,18 @@ class AIPanel(QWidget):
                     "Návrh patří jinému spektru. Vyber původní spektrum nebo vytvoř nový návrh."
                 )
             plan = parse_plan(self.editor.toPlainText())
+            self._plan = plan
             if not plan["operations"]:
-                raise ValueError(
-                    plan["explanation"] or "Návrh neobsahuje žádné úpravy."
-                )
+                if "presentation" not in plan:
+                    raise ValueError(
+                        plan["explanation"] or "Návrh neobsahuje žádné úpravy."
+                    )
+                # Styling only: nothing to preview, data stay unchanged.
+                self.state.clear_preview()
+                self._own_preview_id = "presentation-only"
+                self.apply_button.setEnabled(True)
+                self.status.setText("Návrh mění jen vzhled grafu a píky. Použij jej tlačítkem níže.")
+                return
             preview = self.state.preview_operations(
                 plan["operations"],
                 self._proposal_ids or None,
@@ -337,6 +356,9 @@ class AIPanel(QWidget):
             self.status.setText(str(exc))
 
     def _sync_apply(self):
+        if self._own_preview_id == "presentation-only":
+            self.apply_button.setEnabled(True)
+            return
         preview = self.state.preview_summary
         valid = bool(
             preview
@@ -349,15 +371,25 @@ class AIPanel(QWidget):
     @with_busy_cursor
     def _apply(self):
         try:
-            summary = self.state.preview_summary
-            if not summary or summary.get("id") != self._own_preview_id:
-                raise ValueError("Nejprve vytvoř náhled tohoto návrhu.")
-            self.state.apply_preview()
+            plan = self._plan or {}
+            if self._own_preview_id != "presentation-only":
+                summary = self.state.preview_summary
+                if not summary or summary.get("id") != self._own_preview_id:
+                    raise ValueError("Nejprve vytvoř náhled tohoto návrhu.")
+                self.state.apply_preview()
+            found = 0
+            if "presentation" in plan:
+                found = self.state.apply_presentation(
+                    plan["presentation"], [self.state.active_spectrum_id]
+                )
+            self._plan = None
             self._proposal_revision = None
             self._proposal_ids = None
             self._own_preview_id = None
             self.status.setText(
-                "Návrh byl použit. Pokračuj ručními nástroji nebo vrať celý krok přes Zpět."
+                "Návrh byl použit"
+                + (f" · nalezeno píků: {found}" if found else "")
+                + ". Pokračuj ručními nástroji nebo vrať kroky přes Zpět."
             )
         except ValueError as exc:
             self.status.setText(str(exc))

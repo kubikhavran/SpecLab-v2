@@ -87,7 +87,7 @@ class PeaksSettings:
     show_markers: bool = True
     show_labels: bool = True
     show_leader_lines: bool = True
-    label_angle_deg: float = -90.0
+    label_angle_deg: float = 90.0     # counter-clockwise: reads bottom to top
     label_font_size: int = 24
     label_bold: bool = False
     label_italic: bool = False

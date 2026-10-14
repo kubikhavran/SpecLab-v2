@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List
 
 import numpy as np
 
@@ -30,29 +30,6 @@ import numpy as np
 _SIGNATURE = b"Spectral Data File"
 _ENTRY_SIZE = 16
 _ENTRY_START = 304
-_TEXT_KEYS = {4, 27, 130, 146}
-_PEAK_HINT_WORDS = (
-    "peak",
-    "band",
-    "assignment",
-    "marker",
-    "label",
-    "wavenumber",
-    "cm-1",
-    "cm^-1",
-    "position",
-)
-_NOISE_LABELS = {
-    "intensity",
-    "height",
-    "area",
-    "width",
-    "fwhm",
-    "prominence",
-    "amplitude",
-}
-_NUM_TOKEN_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?")
-
 _X_UNIT_MAP = {
     1: ("cm^-1", "wavenumber"),
     2: (None, "data points"),
@@ -234,137 +211,74 @@ def _extract_main_curve(blob: bytes, entries: Iterable[_SPAEntry]) -> tuple[Dict
     if spectral_entry.length != expected_n * 4:
         raise SPAParseError("Délka datové části SPA neodpovídá deklarovanému počtu bodů; data nebudou přepočítána")
     y = _read_float_vector(blob, spectral_entry.offset, expected_n)
-    if not np.all(np.isfinite(y)):
-        raise SPAParseError("SPA obsahuje nekonečné nebo nečíselné hodnoty ordináty")
+    if np.any(np.isinf(y)):
+        raise SPAParseError("SPA obsahuje nekonečné hodnoty ordináty")
+    # NaN marks regions blanked in OMNIC (e.g. absorption of a carrier film);
+    # parse_spa_file removes them and records the ranges as gaps.
+    if np.count_nonzero(np.isfinite(y)) < 2:
+        raise SPAParseError("SPA neobsahuje dost platných hodnot ordináty")
     return header, y
 
 
-def _decode_text_block(raw: bytes) -> List[str]:
-    texts: List[str] = []
-    if not raw:
-        return texts
-
-    latin = re.sub(rb"\x00+", b"\n", raw).decode("latin-1", errors="ignore").strip()
-    if latin:
-        texts.append(latin)
-
-    utf8 = re.sub(rb"\x00+", b"\n", raw).decode("utf-8", errors="ignore").strip()
-    if utf8 and utf8 != latin:
-        texts.append(utf8)
-
-    if raw.count(0) > len(raw) // 6:
-        utf16 = raw.decode("utf-16-le", errors="ignore").strip()
-        if utf16:
-            texts.append(utf16)
-
-    # Deduplicate while preserving order.
-    unique: List[str] = []
-    seen = set()
-    for txt in texts:
-        key = txt[:400]
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(txt)
-    return unique
+_ANNOTATION_KEY = 104       # peak labels drawn on the spectrum in OMNIC
+_REPORT_KEY = 130           # report blocks; one of them may hold a FIND PEAKS table
+_PEAKTABLE_LINE = re.compile(
+    r"Position:\s*([-+]?\d+(?:[.,]\d+)?)\s+Intensity:\s*([-+]?\d+(?:[.,]\d+)?)"
+)
 
 
-def _collect_text_blocks(blob: bytes, entries: Iterable[_SPAEntry]) -> List[str]:
-    blocks: List[str] = []
-
-    for entry in entries:
-        if entry.offset <= 0 or entry.length <= 0:
-            continue
-        if entry.offset + entry.length > len(blob):
-            continue
-        raw = blob[entry.offset : entry.offset + entry.length]
-        if entry.key in _TEXT_KEYS:
-            blocks.extend(_decode_text_block(raw))
-
-    # Deduplicate big repeats.
-    unique: List[str] = []
-    seen = set()
-    for block in blocks:
-        key = block[:500]
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(block)
-    return unique
-
-
-def _to_float(token: str) -> Optional[float]:
+def _annotation_label(text: str, x: float) -> str:
+    """OMNIC writes the rounded position as label text; keep only custom text."""
     try:
-        return float(token.replace(",", "."))
+        if abs(float(text.replace(",", ".")) - x) <= 1.0:
+            return ""
     except ValueError:
-        return None
+        pass
+    return text[:120]
 
 
-def _clean_label(text: str) -> str:
-    label = re.sub(r"\s+", " ", text).strip(" \t;,:|/-")
-    if not label:
-        return ""
-    low = label.lower()
-    if low in _NOISE_LABELS:
-        return ""
-    if len(label) > 120:
-        label = label[:120].rstrip()
-    return label
-
-
-def _extract_peaks_from_block(text: str, x_min: float, x_max: float) -> List[SPAPeakEntry]:
-    if not text:
-        return []
-
-    x_lo, x_hi = (x_min, x_max) if x_min <= x_max else (x_max, x_min)
-    span = abs(x_hi - x_lo)
-    margin = max(1e-6, span * 0.05)
-    lo = x_lo - margin
-    hi = x_hi + margin
-
-    lower_text = text.lower()
-    block_has_hint = any(word in lower_text for word in _PEAK_HINT_WORDS)
-
-    candidates: List[SPAPeakEntry] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if len(line) < 2:
+def _annotation_peaks(blob: bytes, entries: Iterable[_SPAEntry], lo: float, hi: float) -> List[SPAPeakEntry]:
+    """Parse OMNIC annotation records: u32 count, then per label
+    u16 flags, f32 peak x, f32 label x, f32 intensity, NUL-terminated text.
+    A record that does not fit the layout invalidates the whole block."""
+    for entry in entries:
+        if entry.key != _ANNOTATION_KEY or entry.length < 4 or entry.offset + entry.length > len(blob):
             continue
-        matches = list(_NUM_TOKEN_RE.finditer(line))
-        if not matches:
+        raw = blob[entry.offset: entry.offset + entry.length]
+        count = struct.unpack_from("<I", raw, 0)[0]
+        if count > 5000:
+            return []
+        position, peaks = 4, []
+        for _ in range(count):
+            if position + 14 > len(raw):
+                return []
+            x_peak, _x_label, intensity = struct.unpack_from("<fff", raw, position + 2)
+            end = raw.find(b"\x00", position + 14)
+            if end < 0 or end - position - 14 > 120:
+                return []
+            text = raw[position + 14:end].decode("latin-1").strip()
+            position = end + 1
+            if not (np.isfinite(x_peak) and np.isfinite(intensity) and lo <= x_peak <= hi):
+                return []
+            if not text or not text.isprintable():
+                return []
+            peaks.append(SPAPeakEntry(x=float(x_peak), label=_annotation_label(text, float(x_peak))))
+        return peaks
+    return []
+
+
+def _peak_table_peaks(blob: bytes, entries: Iterable[_SPAEntry], lo: float, hi: float) -> List[SPAPeakEntry]:
+    """Plain-text FIND PEAKS report ("Position: 1718  Intensity: 34.762")."""
+    for entry in entries:
+        if entry.key != _REPORT_KEY or entry.offset + entry.length > len(blob):
             continue
-
-        in_range: List[tuple[float, int, int]] = []
-        for match in matches:
-            value = _to_float(match.group(0))
-            if value is None or not np.isfinite(value):
-                continue
-            if lo <= value <= hi:
-                in_range.append((float(value), match.start(), match.end()))
-
-        if not in_range:
+        text = blob[entry.offset: entry.offset + entry.length].decode("latin-1", errors="ignore")
+        if "FIND PEAKS" not in text:
             continue
-
-        # Avoid noisy generic lines unless they clearly look like peak tables.
-        if not block_has_hint and len(matches) > 3 and "\t" not in line and "," not in line and ";" not in line:
-            continue
-
-        x_value, start_idx, end_idx = in_range[0]
-        tail = line[end_idx:]
-        head = line[:start_idx]
-        label = _clean_label(tail) if re.search(r"[A-Za-z]", tail) else ""
-        if not label and block_has_hint and re.search(r"[A-Za-z]", head):
-            label = _clean_label(head)
-
-        if not block_has_hint and not label and len(matches) > 2:
-            continue
-
-        candidates.append(SPAPeakEntry(x=x_value, label=label))
-
-    if block_has_hint:
-        return candidates
-    if len(candidates) >= 2:
-        return candidates
+        found = [float(x.replace(",", ".")) for x, _ in _PEAKTABLE_LINE.findall(text)]
+        peaks = [SPAPeakEntry(x=x) for x in found if lo <= x <= hi]
+        if peaks:
+            return peaks
     return []
 
 
@@ -397,18 +311,19 @@ def _merge_peaks(peaks: Iterable[SPAPeakEntry], x: List[float]) -> List[SPAPeakE
     return merged[:500]
 
 
-def _extract_peaks(blob: bytes, entries: List[_SPAEntry], x: List[float]) -> List[SPAPeakEntry]:
+def _extract_peaks(blob: bytes, entries: List[_SPAEntry], x: List[float]) -> tuple[List[SPAPeakEntry], str]:
+    """Peaks labelled in OMNIC, else its FIND PEAKS table. Free text such as
+    the processing history or instrument status is never read as peaks."""
     if not x:
-        return []
-    x_min = float(min(x))
-    x_max = float(max(x))
-
-    blocks = _collect_text_blocks(blob, entries)
-    found: List[SPAPeakEntry] = []
-    for block in blocks:
-        found.extend(_extract_peaks_from_block(block, x_min, x_max))
-
-    return _merge_peaks(found, x)
+        return [], ""
+    lo, hi = float(min(x)), float(max(x))
+    annotations = _annotation_peaks(blob, entries, lo, hi)
+    if annotations:
+        return _merge_peaks(annotations, x), "omnic_annotations"
+    table = _peak_table_peaks(blob, entries, lo, hi)
+    if table:
+        return _merge_peaks(table, x), "omnic_peak_table"
+    return [], ""
 
 
 def parse_spa_file(filepath: str) -> SPAParseResult:
@@ -451,10 +366,19 @@ def parse_spa_file(filepath: str) -> SPAParseResult:
         if key in header:
             metadata[key] = header[key]
     order = np.argsort(x_array, kind="stable")
-    x = x_array[order].tolist()
-    y = y_array[order].tolist()
-    peaks = _extract_peaks(blob, entries, x)
+    x_sorted, y_sorted = x_array[order], y_array[order]
+    blank = np.isnan(y_sorted)
+    if np.any(blank):
+        edges = np.flatnonzero(np.diff(np.r_[False, blank, False].astype(int)))
+        metadata["blanked_regions"] = [
+            [float(x_sorted[start]), float(x_sorted[end - 1])]
+            for start, end in zip(edges[::2], edges[1::2])
+        ]
+        x_sorted, y_sorted = x_sorted[~blank], y_sorted[~blank]
+    x = x_sorted.tolist()
+    y = y_sorted.tolist()
+    peaks, peak_source = _extract_peaks(blob, entries, x)
 
     if peaks:
-        metadata["imported_peaks_source"] = "embedded_text_heuristic"
+        metadata["imported_peaks_source"] = peak_source
     return SPAParseResult(x=x, y=y, metadata=metadata, peaks=peaks)

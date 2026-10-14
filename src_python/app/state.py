@@ -14,7 +14,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 
 import numpy as np
 
@@ -731,6 +731,23 @@ class AppState(QObject):
         return self._record_transaction(before, 'Apply preset from original data' if recipe is not None else 'Apply preset settings',
                                         'preset', recipe or [], [s.id for s in self._spectra])
 
+    def apply_presentation(self, presentation: dict, spectrum_ids=None) -> int:
+        """Apply validated figure settings (e.g. from an AI plan); returns peaks found."""
+        from core.presentation import validate_presentation
+
+        checked = validate_presentation(presentation, self)
+        settings = checked["settings"]
+        if checked["relative_prominence"] is not None:
+            ids = self._resolve_ids(spectrum_ids)
+            span = max(float(np.ptp(self.displayed_y(sid))) for sid in ids)
+            peaks = settings.setdefault("peaks", asdict(self._peaks))
+            peaks["min_prominence"] = checked["relative_prominence"] * span
+        if settings:
+            self.apply_preset(settings)
+        if checked["detect_peaks"]:
+            return self.detect_spectrum_peaks(spectrum_ids)
+        return 0
+
     def edit_peak_label(self, spectrum_id: str, peak_id: str, label: str) -> dict:
         self._resolve_ids([spectrum_id])
         if not isinstance(label, str) or len(label) > 1000:
@@ -789,11 +806,17 @@ class AppState(QObject):
         for spec in self._spectra:
             if spec.id in selected:
                 prominence, polarity = self._peak_parameters(p, spec.meta, mixed)
-                results[spec.id] = detected_to_peaks(detect_peaks(
+                found = detected_to_peaks(detect_peaks(
                     spec.x, self.displayed_y(spec.id), min_prominence=prominence,
                     min_distance_x=p.min_distance, max_peaks=p.max_peaks, polarity=polarity,
                     x_min=p.x_min if p.region_enabled else None,
                     x_max=p.x_max if p.region_enabled else None))
+                # Manual and imported labels (e.g. from OMNIC) take precedence.
+                step = float(np.median(np.abs(np.diff(spec.x)))) if len(spec.x) > 1 else 0.0
+                tolerance = max(p.min_distance / 2, 2 * step)
+                manual = [peak.x for peak in self.peaks_manual.get(spec.id, [])]
+                results[spec.id] = [peak for peak in found
+                                    if all(abs(peak.x - x) > tolerance for x in manual)]
         before = self._snapshot()
         self.peaks_auto.update(results)
         self._peaks.enabled = True

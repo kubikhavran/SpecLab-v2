@@ -207,3 +207,64 @@ def test_integral_floats_accepted_and_non_chat_models_hidden():
     assert chat_models(["gpt-oss-120b", "nomic-embed-text-v1.5", "qwen3-reranker-4b",
                         "whisper-large-v3", "multilingual-e5-large-instruct", "qwen3.5"]) == [
         "gpt-oss-120b", "qwen3.5"]
+
+
+def test_presentation_is_whitelisted_and_validated():
+    ok = plan()
+    ok["presentation"] = {"graphics": {"palette": "pubBold"}, "peaks": {"max_peaks": 8}, "detect_peaks": True}
+    assert parse_plan(json.dumps(ok))["presentation"]["detect_peaks"] is True
+    for bad in [
+        {"graphics": {"export_width": 99999}},          # not whitelisted
+        {"graphics": {"font_family": "Comic Sans"}},    # unknown font
+        {"peaks": {"max_peaks": True}},                 # bool as number
+        {"peaks": {"polarity": "sideways"}},
+        {"plot": {"x_min": 0}},
+        {"detect_peaks": "yes"},
+        {"peaks": {"relative_prominence": 2}},
+        {"peaks": {"relative_prominence": True}},
+        {"script": "rm -rf /"},
+        {},
+    ]:
+        bad_plan = plan()
+        bad_plan["presentation"] = bad
+        with pytest.raises(AIError):
+            parse_plan(json.dumps(bad_plan))
+
+
+def test_context_reports_band_widths_for_safe_filters():
+    x = np.linspace(100, 1100, 1001)
+    y = 1000 * np.exp(-0.5 * ((x - 520) / 3.0) ** 2) + 100 * np.exp(-0.5 * ((x - 900) / 20) ** 2)
+    spec = Spectrum(x=x.tolist(), y=y.tolist(), meta={"technique": "raman"})
+    context = spectrum_context(spec, y, False)
+    strongest = context["strongest_bands"][0]
+    assert abs(strongest["x"] - 520) < 1 and strongest["relative_prominence"] > 0.9
+    assert 6 < strongest["fwhm_points"] < 8      # FWHM = 2.355 sigma = 7 points
+    assert context["narrowest_strong_band_fwhm_points"] == strongest["fwhm_points"]
+    assert len(context["strongest_bands"]) == 2
+
+
+def test_detection_listed_as_operation_moves_to_presentation():
+    raw = plan([{"op": "smooth", "params": {"window": 5, "poly_order": 2}},
+                {"op": "detect_peaks", "params": {"threshold": 0.1}}])
+    parsed = parse_plan(json.dumps(raw))
+    assert [op["op"] for op in parsed["operations"]] == ["smooth"]
+    assert parsed["presentation"]["detect_peaks"] is True
+    assert any("Detekce" in warning for warning in parsed["warnings"])
+
+
+def test_transient_server_error_is_retried_once():
+    import urllib.error
+
+    client = EInfraClient("fake_key")
+    calls = []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            if len(calls) == 1:
+                raise urllib.error.HTTPError(request.full_url, 500, "busy", {}, None)
+            return Response(json.dumps({"data": [{"id": "m"}]}).encode())
+
+    with patch("urllib.request.build_opener", return_value=Opener()), patch("time.sleep"):
+        assert client.list_models() == ["m"]
+    assert len(calls) == 2

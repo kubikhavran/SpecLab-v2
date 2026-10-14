@@ -16,6 +16,7 @@ from scipy.ndimage import median_filter
 from scipy.signal import savgol_filter
 
 from core.baseline import asls_baseline
+from core.sampling import segments
 
 
 class ProcessingError(ValueError):
@@ -128,12 +129,6 @@ def _arrays(x, y):
     return xa.copy(), ya.copy()
 
 
-# Detector-based axes (e.g. Raman CCD pixels converted to cm⁻¹) are monotonic but
-# not exactly equidistant. Point-domain filters are acceptable there, but not across
-# real gaps where neighbouring samples are far apart in X.
-MAX_INDEX_STEP_RATIO = 3.0
-
-
 def _is_uniform(x) -> bool:
     dx = np.diff(x)
     return bool(np.allclose(dx, dx[0], rtol=1e-4, atol=abs(dx[0]) * 1e-8))
@@ -145,29 +140,39 @@ def _uniform_step(x):
     return float(np.diff(x)[0])
 
 
-def _point_domain_ready(x, detail):
-    """Allow point-domain filters on gently varying sampling; reject gaps."""
+def _point_segments(x, detail) -> list[slice]:
+    """Point-domain filters accept gently varying sampling and run separately
+    on the runs between real gaps (e.g. regions blanked by the instrument)."""
     if _is_uniform(x):
         detail['sampling'] = 'uniform'
-        return
-    step = np.abs(np.diff(x))
-    # The median of two steps is their mean, which would hide a gap.
-    typical = np.median(step) if len(step) >= 3 else np.min(step)
-    ratio = float(np.max(step) / typical)
-    if ratio > MAX_INDEX_STEP_RATIO:
-        raise ProcessingError(
-            f'V rozložení hodnot X je mezera ({ratio:.1f}× obvyklý krok). '
-            'Mezeru ořízni nebo spektrum nejprve převzorkuj.')
+        return [slice(0, len(x))]
     detail['sampling'] = 'point_index'
-    detail['max_step_ratio'] = ratio
+    parts = segments(x)
+    if len(parts) > 1:
+        detail['segments'] = len(parts)
+    return parts
 
 
-def _filter_ready(x, window, detail=None):
-    if detail is None:
-        delta = _uniform_step(x)
-    else:
-        _point_domain_ready(x, detail)
-        delta = None
+def _per_segment(y, parts, minimum, function, detail):
+    """Replace every long enough part with function(part); keep shorter ones."""
+    output = y.copy()
+    processed = skipped = 0
+    for part in parts:
+        if part.stop - part.start < minimum:
+            skipped += 1
+            continue
+        output[part] = function(part)
+        processed += 1
+    if not processed:
+        raise ProcessingError(
+            f'Žádný souvislý úsek spektra nemá alespoň {minimum} bodů; zvol menší okno.')
+    if skipped:
+        detail['skipped_segments'] = skipped
+    return output
+
+
+def _filter_ready(x, window):
+    delta = _uniform_step(x)
     if window > len(x):
         raise ProcessingError(f'Okno {window} přesahuje {len(x)} dostupných bodů; zvol menší liché okno.')
     return delta
@@ -194,8 +199,7 @@ def _interpolate(x, y, mask):
     return result
 
 
-def _despike(x, y, params, detail):
-    _filter_ready(x, params['window'], detail)
+def _despike_part(x, y, params):
     output = y.copy()
     removed = np.zeros(len(y), dtype=bool)
     for _ in range(params['iterations']):
@@ -218,6 +222,19 @@ def _despike(x, y, params, detail):
             break
         output = _interpolate(x, output, mask)
         removed |= mask
+    return output, removed
+
+
+def _despike(x, y, params, detail):
+    if params['window'] > len(x):
+        raise ProcessingError(f'Okno {params["window"]} přesahuje {len(x)} dostupných bodů; zvol menší liché okno.')
+    removed = np.zeros(len(y), dtype=bool)
+
+    def run(part):
+        cleaned, removed[part] = _despike_part(x[part], y[part], params)
+        return cleaned
+
+    output = _per_segment(y, _point_segments(x, detail), params['window'], run, detail)
     return output, int(np.sum(removed))
 
 
@@ -233,12 +250,17 @@ def run_operations(x, y, meta, operations) -> dict:
         op, p = item['op'], item['params']
         detail = copy.deepcopy(item)
         if op == 'baseline':
-            # AsLS penalises second differences between neighbouring points.
-            _point_domain_ready(x, detail)
             if len(x) < 3:
                 raise ProcessingError('Korekce baseline vyžaduje alespoň tři body.')
-            baseline = asls_baseline(y, lam=p['lam'], p=p['p'], n_iter=p['iterations'])
-            y = y - baseline
+            # AsLS penalises second differences between neighbouring points,
+            # so it runs separately on each run between gaps.
+            baseline = np.zeros(len(y))
+
+            def fit(part, y=y, baseline=baseline, p=p):
+                baseline[part] = asls_baseline(y[part], lam=p['lam'], p=p['p'], n_iter=p['iterations'])
+                return y[part] - baseline[part]
+
+            y = _per_segment(y, _point_segments(x, detail), 3, fit, detail)
             detail['baseline'] = baseline.tolist()
             if meta.get('y_kind') == 'absorbance':
                 # Subtracting an absorbance background preserves the logarithmic unit.
@@ -246,8 +268,12 @@ def run_operations(x, y, meta, operations) -> dict:
             else:
                 _derived(meta, 'baseline', meta.get('y_unit', 'a.u.'))
         elif op == 'smooth':
-            _filter_ready(x, p['window'], detail)
-            y = savgol_filter(y, window_length=p['window'], polyorder=p['poly_order'])
+            if p['window'] > len(x):
+                raise ProcessingError(f'Okno {p["window"]} přesahuje {len(x)} dostupných bodů; zvol menší liché okno.')
+            y = _per_segment(
+                y, _point_segments(x, detail), p['window'],
+                lambda part, y=y, p=p: savgol_filter(y[part], window_length=p['window'], polyorder=p['poly_order']),
+                detail)
         elif op == 'despike':
             y, detail['removed_count'] = _despike(x, y, p, detail)
         elif op == 'normalize':

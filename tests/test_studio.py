@@ -1,5 +1,7 @@
 import os
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from app.main_window import MainWindow
@@ -134,5 +136,68 @@ def test_text_tables_are_named_by_file_and_column():
     single = {"name": "Intensity", "column_index": 1}
     assert spectrum_display_name("/data/sample_A.csv", single, 0, 1) == "sample_A"
     assert spectrum_display_name("/data/series.csv", {"name": "500 mV", "column_index": 2}, 1, 3) == "series · 500 mV"
-    assert spectrum_display_name("/data/map.wdf", {"name": "Map [3]"}, 2, 88) == "Map [3] · 3"
+    assert spectrum_display_name("/data/map.wdf", {"name": "Map [3]"}, 2, 88) == "Map [3]"
+    assert spectrum_display_name("/data/multi.spc", {"name": "Run"}, 1, 4) == "Run · 2"
     assert spectrum_display_name("/data/one.spa", {"name": "Polystyrene"}, 0, 1) == "Polystyrene"
+
+
+def test_auto_offset_separates_overlay_curves():
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.load_demo()
+    app.processEvents()
+    state = window._state
+    window._auto_offset()
+    first, second = (np.asarray(state.displayed_y(s.id)) for s in state.spectra)
+    offset = state.plot.stack_offset
+    assert state.plot.show_all_spectra and offset > 0
+    assert np.min(second) + offset > np.max(first)
+    window._dirty = False
+    window.close()
+
+
+def test_ai_presentation_plan_styles_figure_and_detects_peaks():
+    import json
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.resize(1500, 940)
+    window.show()
+    window.load_demo()
+    app.processEvents()
+    state = window._state
+    ai = window.ai_panel
+    plan = {
+        "explanation": "Vyhlazení a popisky píků.",
+        "warnings": [],
+        "operations": [{"op": "smooth", "params": {"window": 9, "poly_order": 3}},
+                       {"op": "normalize", "params": {"method": "max"}}],
+        "presentation": {
+            "graphics": {"x_label": "Raman shift (cm^{-1})", "font_family": "Times New Roman"},
+            # Relative prominence survives the normalisation above.
+            "peaks": {"relative_prominence": 0.2, "max_peaks": 6, "label_angle_deg": 90},
+            "detect_peaks": True,
+        },
+    }
+    ai._proposal_source, ai._proposal_ids = "ai", [state.active_spectrum_id]
+    ai._proposal_revision = state.revision
+    ai.editor.setPlainText(json.dumps(plan))
+    ai._preview()
+    assert ai.apply_button.isEnabled()
+    ai._apply()
+    assert state.graphics.font_family == "Times New Roman"
+    assert state.graphics.x_label == "Raman shift (cm^{-1})"
+    span = float(np.ptp(state.displayed_y(state.active_spectrum_id)))
+    assert abs(state.peaks_settings.min_prominence - 0.2 * span) < 1e-9
+    assert 1 <= len(state.peaks_auto[state.active_spectrum_id]) <= 6
+    app.processEvents()
+    assert window._plot._labels and all(label["item"].isVisible() for label in window._plot._labels)
+    # Styling-only plans skip the data preview.
+    plan = {"explanation": "Jen vzhled.", "warnings": [], "operations": [],
+            "presentation": {"graphics": {"frame_mode": "box"}}}
+    ai.editor.setPlainText(json.dumps(plan))
+    ai._preview()
+    ai._apply()
+    assert state.graphics.frame_mode == "box"
+    window._dirty = False
+    window.close()

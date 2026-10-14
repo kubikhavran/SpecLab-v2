@@ -13,6 +13,7 @@ import numpy as np
 from scipy.signal import find_peaks
 
 from app.models import Peak, _new_id
+from core.sampling import segments
 
 
 @dataclass
@@ -82,30 +83,35 @@ def detect_peaks(
             region_mask &= xa <= x_max
 
     results: List[DetectedPeak] = []
-    sample_indices = np.arange(n)
+    # Search each run between sampling gaps separately: the jump across a gap
+    # (e.g. an OMNIC-blanked region) is not a spectral feature.
+    parts = [part for part in segments(xa) if part.stop - part.start >= 3]
 
     def _find(signal: np.ndarray, invert: bool = False) -> None:
-        indices, props = find_peaks(
-            signal,
-            prominence=(min_prominence, None),
-            width=(0, None),
-        )
-        proms = props.get("prominences", np.zeros(len(indices)))
-
-        for position, (idx, prom) in enumerate(zip(indices, proms)):
-            if not region_mask[idx]:
-                continue
-            if min_prominence > 0 and prom < min_prominence:
-                continue
-            results.append(DetectedPeak(
-                x=float(xa[idx]),
-                y=float(ya[idx]),
-                i=int(idx),
-                prominence=float(prom),
-                kind='min' if invert else 'max',
-                width=float(abs(np.interp(props['right_ips'][position], sample_indices, xa)
-                                - np.interp(props['left_ips'][position], sample_indices, xa))),
-            ))
+        for part in parts:
+            local_x = xa[part]
+            local_index = np.arange(len(local_x))
+            indices, props = find_peaks(
+                signal[part],
+                prominence=(min_prominence, None),
+                width=(0, None),
+            )
+            proms = props.get("prominences", np.zeros(len(indices)))
+            for position, (local, prom) in enumerate(zip(indices, proms)):
+                idx = part.start + int(local)
+                if not region_mask[idx]:
+                    continue
+                if min_prominence > 0 and prom < min_prominence:
+                    continue
+                results.append(DetectedPeak(
+                    x=float(xa[idx]),
+                    y=float(ya[idx]),
+                    i=idx,
+                    prominence=float(prom),
+                    kind='min' if invert else 'max',
+                    width=float(abs(np.interp(props['right_ips'][position], local_index, local_x)
+                                    - np.interp(props['left_ips'][position], local_index, local_x))),
+                ))
 
     if polarity in ("max", "both"):
         _find(ya)

@@ -61,7 +61,7 @@ class ProcessingTests(unittest.TestCase):
         descending = run_operations(x[::-1], x[::-1], {}, [operation('resample', step=0.7)])
         np.testing.assert_allclose(np.diff(descending['x']), -0.7)
 
-    def test_detector_axis_allows_point_filters_but_not_gaps(self):
+    def test_detector_axis_allows_point_filters(self):
         # Raman CCD axes are monotonic with a slowly changing step.
         x = np.cumsum(np.linspace(1.49, 1.68, 200))
         y = np.sin(x / 20) + 0.01 * np.cos(x * 7)
@@ -74,15 +74,34 @@ class ProcessingTests(unittest.TestCase):
                 self.assertTrue(np.all(np.isfinite(result['y'])))
         uniform = run_operations(np.arange(20.0), np.ones(20), {}, [operation('smooth', window=5)])
         self.assertEqual(uniform['details'][0]['sampling'], 'uniform')
-        gap = np.r_[np.arange(0, 20.0), np.arange(100, 120.0)]
-        for op in [operation('smooth', window=5), operation('baseline'), operation('despike', window=5)]:
-            with self.subTest(gap=op['op']), self.assertRaisesRegex(ProcessingError, 'mezer'):
-                run_operations(gap, np.ones(40), {}, [op])
         with self.assertRaisesRegex(ProcessingError, 'převzorkuj'):
             run_operations(x, y, {}, [operation('derivative', window=11, poly_order=3)])
-        with self.assertRaisesRegex(ProcessingError, 'mezer'):
+
+    def test_gaps_split_point_filters_into_independent_segments(self):
+        # Two plateaus separated by a blanked region must not blend across it.
+        gap_x = np.r_[np.arange(0, 20.0), np.arange(100, 120.0)]
+        gap_y = np.r_[np.zeros(20), np.full(20, 10.0)]
+        smoothed = run_operations(gap_x, gap_y, {}, [operation('smooth', window=5, poly_order=2)])
+        np.testing.assert_allclose(smoothed['y'], gap_y, atol=1e-12)
+        self.assertEqual(smoothed['details'][0]['segments'], 2)
+        spiky = gap_y.copy()
+        spiky[30] = 500
+        despiked = run_operations(gap_x, spiky, {}, [operation('despike', window=5)])
+        np.testing.assert_allclose(despiked['y'], gap_y)
+        self.assertEqual(despiked['details'][0]['removed_count'], 1)
+        corrected = run_operations(gap_x, gap_y + 0.01 * gap_x, {}, [operation('baseline', lam=1e3)])
+        self.assertLess(np.max(np.abs(corrected['y'])), 0.05)
+        self.assertEqual(len(corrected['details'][0]['baseline']), 40)
+        with self.assertRaisesRegex(ProcessingError, 'úsek'):
             run_operations([100.0, 101.0, 100000.0], [1.0, 2.0, 3.0], {},
                            [operation('smooth', window=3, poly_order=1)])
+
+    def test_peaks_are_not_found_at_gap_edges(self):
+        x = np.r_[np.arange(0, 20.0), np.arange(100, 120.0)]
+        y = np.r_[np.arange(20.0), np.arange(20.0)[::-1] - 1]
+        self.assertEqual(detect_peaks(x, y, min_distance_x=0), [])
+        y[30] += 5
+        self.assertEqual([p.x for p in detect_peaks(x, y, min_distance_x=0)], [110.0])
 
     def test_invalid_parameters_and_data_are_rejected(self):
         invalid = [operation('exec'), operation('smooth', window=4),

@@ -125,7 +125,10 @@ def spectrum_display_name(path, metadata: dict, index: int, count: int) -> str:
     if "column_index" in metadata:
         return stem if count == 1 else f"{stem} · {title or index + 1}"
     name = title or stem
-    return f"{name} · {index + 1}" if count > 1 else name
+    # Renishaw titles already carry the spectrum number, e.g. "Map [3]".
+    if count > 1 and not name.endswith(f"[{index + 1}]"):
+        return f"{name} · {index + 1}"
+    return name
 
 
 def history_text(record: dict) -> str:
@@ -357,6 +360,9 @@ class MainWindow(QMainWindow):
         self.offset.setFixedWidth(105)
         self.offset.valueChanged.connect(lambda v: self._state.set_plot(stack_offset=v))
         row.addWidget(self.offset)
+        auto_offset = button("Auto", self._auto_offset)
+        auto_offset.setToolTip("Rozestoupit křivky tak, aby se v překryvu nepřekrývaly")
+        row.addWidget(auto_offset)
         self.reverse = QCheckBox("Obrátit pořadí")
         self.reverse.toggled.connect(
             lambda v: self._state.set_plot(reverse_overlay_order=v)
@@ -711,6 +717,10 @@ class MainWindow(QMainWindow):
             )
         QApplication.clipboard().setText(output.getvalue())
         self.statusBar().showMessage("Tabulka píků zkopírována jako TSV")
+
+    def _auto_offset(self):
+        self._state.set_plot(show_all_spectra=True, stack_offset=self._plot.auto_stack_offset())
+        self._fit()
 
     def _plot_fit_y(self):
         self._plot.fit_y_visible()

@@ -59,12 +59,22 @@ class ImportTests(unittest.TestCase):
             parse_spectrum_file(self.file('.txt', '1 2\n1 3\n2 4\n'))
 
     @staticmethod
-    def spa(payload_count=3, declared_count=3, x_unit=1, peaks=True):
+    def annotations(*records):
+        """OMNIC block 104: u32 count, then u16 flags, f32 x, f32 label x, f32 y, text NUL."""
+        raw = struct.pack('<I', len(records))
+        for x, text in records:
+            raw += struct.pack('<Hfff', 8, x, x, 50.0) + text.encode('latin-1') + b'\x00'
+        return raw
+
+    @classmethod
+    def spa(cls, payload_count=3, declared_count=3, x_unit=1, peaks=True):
         entries = [(2, 512, 208), (3, 720, payload_count * 4)]
-        peak_text = b'Peak positions\n2000 Carbonyl\n3000 Stretch\n'
+        # Real files also carry free text (history, comments) that must not become peaks.
+        peak_text = cls.annotations((2000.0, 'Carbonyl'), (3000.0, '3000'))
+        history = b'Automatic Baseline Correct\n Corrected from 3000.0000 to 1000.0000.\n'
         if peaks:
-            entries.append((4, 740, len(peak_text)))
-        blob = bytearray(800)
+            entries += [(104, 740, len(peak_text)), (27, 900, len(history))]
+        blob = bytearray(1000)
         blob[:18] = b'Spectral Data File'
         struct.pack_into('<H', blob, 294, len(entries))
         for index, (key, offset, length) in enumerate(entries):
@@ -77,6 +87,7 @@ class ImportTests(unittest.TestCase):
         struct.pack_into('<' + 'f' * payload_count, blob, 720, *range(1, payload_count + 1))
         if peaks:
             blob[740:740 + len(peak_text)] = peak_text
+            blob[900:900 + len(history)] = history
         return bytes(blob)
 
     def test_spa_preserves_direction_and_embedded_peaks(self):
@@ -84,7 +95,39 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(item.x, [1000, 2000, 3000])
         self.assertEqual(item.y, [3, 2, 1])
         self.assertEqual(item.metadata['y_kind'], 'absorbance')
-        self.assertTrue(any(p.x == 2000 and 'Carbonyl' in p.label for p in item.imported_peaks))
+        # OMNIC labels: custom text kept, numeric labels left to SpecLab formatting.
+        self.assertEqual([(p.x, p.label) for p in item.imported_peaks], [(2000, 'Carbonyl'), (3000, '')])
+        self.assertEqual(item.metadata['imported_peaks_source'], 'omnic_annotations')
+
+    def test_spa_ignores_free_text_and_reads_find_peaks_table(self):
+        blob = bytearray(self.spa(peaks=False))
+        report = b'PEAKTABLE\nFIND PEAKS:\n Peak list:\n  Position:  1500  Intensity:  34.762\n'
+        status = b'Instrument Status\tPass\tDate Tested: 2026\n Corrected from 3000 to 1000.\n'
+        struct.pack_into('<H', blob, 294, 4)
+        for index, (key, offset, length) in enumerate([(130, 740, len(report)), (27, 900, len(status))], 2):
+            position = 304 + index * 16
+            blob[position] = key
+            struct.pack_into('<II', blob, position + 2, offset, length)
+        blob += bytes(200)
+        blob[740:740 + len(report)] = report
+        blob[900:900 + len(status)] = status
+        item = parse_spectrum_file(self.file('.spa', bytes(blob)))
+        self.assertEqual([p.x for p in item.imported_peaks], [1500])
+        self.assertEqual(item.metadata['imported_peaks_source'], 'omnic_peak_table')
+        bad = bytearray(self.spa())
+        struct.pack_into('<I', bad, 740, 99)   # record count larger than the block
+        self.assertEqual(parse_spectrum_file(self.file('.spa', bytes(bad))).imported_peaks, [])
+
+    def test_spa_blanked_regions_become_recorded_gaps(self):
+        blob = bytearray(self.spa(payload_count=5, declared_count=5, peaks=False))
+        struct.pack_into('<f', blob, 720 + 2 * 4, float('nan'))
+        item = parse_spectrum_file(self.file('.spa', bytes(blob)))
+        self.assertEqual(item.x, [1000, 1500, 2500, 3000])
+        self.assertEqual(item.y, [5, 4, 2, 1])
+        self.assertEqual(item.metadata['blanked_regions'], [[2000.0, 2000.0]])
+        struct.pack_into('<f', blob, 720, float('inf'))
+        with self.assertRaisesRegex(SpectrumParseError, 'nekonečné'):
+            parse_spectrum_files(self.file('.spa', bytes(blob)))
 
     def test_spa_truncated_payload_not_stretched(self):
         with self.assertRaisesRegex(SpectrumParseError, 'počtu bodů'):
