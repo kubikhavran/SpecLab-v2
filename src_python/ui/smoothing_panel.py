@@ -5,11 +5,11 @@ Equivalent of SmoothingPanel.tsx.
 
 from __future__ import annotations
 
-import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
-from core.smoothing import savgol_smooth
 
 
 class SmoothingPanel(QWidget):
@@ -121,39 +120,39 @@ class SmoothingPanel(QWidget):
         self._poly_label.setText(str(val))
         self._state.set_smoothing(poly_order=val)
 
-    def _get_input_y(self, spectrum_id: str, raw_y: list) -> np.ndarray:
-        """Get the Y data to smooth: processed (baseline-corrected) > cosmic > raw."""
-        if spectrum_id in self._state.processed_y:
-            return np.array(self._state.processed_y[spectrum_id], dtype=np.float64)
-        if spectrum_id in self._state.cosmic_clean_y:
-            return np.array(self._state.cosmic_clean_y[spectrum_id], dtype=np.float64)
-        return np.array(raw_y, dtype=np.float64)
+    def _operation(self) -> dict:
+        s = self._state.smoothing
+        return {'op': 'smooth', 'params': {'window': s.window, 'poly_order': s.poly_order}}
+
+    def _apply(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            proposal = self._state.preview_operations([self._operation()], ids)
+            self._state.apply_preview(proposal)
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be applied", str(error))
+
+    def _reset(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            self._state.reset_operation('smooth', ids)
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be reset", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        s = self._state.smoothing
-        y_in = self._get_input_y(spec.id, spec.y)
-        y_smooth = savgol_smooth(y_in, window=s.window, poly_order=s.poly_order)
-        self._state.smoothed_y[spec.id] = y_smooth.tolist()
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._apply([spec.id])
 
     def _on_reset(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        self._state.smoothed_y.pop(spec.id, None)
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._reset([spec.id])
 
     def _on_apply_all(self) -> None:
-        s = self._state.smoothing
-        for spec in self._state.spectra:
-            y_in = self._get_input_y(spec.id, spec.y)
-            y_smooth = savgol_smooth(y_in, window=s.window, poly_order=s.poly_order)
-            self._state.smoothed_y[spec.id] = y_smooth.tolist()
-        self._state.spectra_changed.emit()
+        self._apply([spec.id for spec in self._state.spectra])
 
     def _on_reset_all(self) -> None:
-        self._state.smoothed_y.clear()
-        self._state.spectra_changed.emit()
+        self._reset([spec.id for spec in self._state.spectra])

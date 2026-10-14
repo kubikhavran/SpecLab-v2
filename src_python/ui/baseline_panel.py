@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
-from core.baseline import apply_baseline, asls_baseline
 
 
 LAMBDA_EXP_MIN = 2
@@ -152,51 +152,39 @@ class BaselinePanel(QWidget):
     def _on_overlay_toggled(self, checked: bool) -> None:
         self._state.set_baseline(show_overlay=checked)
 
-    def _compute_and_store(self, spectrum_id: str, y_input: np.ndarray) -> None:
-        """Run AsLS and store results in state."""
-        b = self._state.baseline
-        baseline = asls_baseline(y_input, lam=b.lambda_, p=b.p, n_iter=b.iterations)
-        corrected = apply_baseline(y_input, baseline)
-        self._state.processed_y[spectrum_id] = corrected.tolist()
-        self._state.baseline_y[spectrum_id] = baseline.tolist()
-        self._state.smoothed_y.pop(spectrum_id, None)
+    def _operation(self) -> dict:
+        s = self._state.baseline
+        return {'op': 'baseline', 'params': {'lam': s.lambda_, 'p': s.p, 'iterations': s.iterations}}
+
+    def _apply(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            proposal = self._state.preview_operations([self._operation()], ids)
+            self._state.apply_preview(proposal)
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be applied", str(error))
+
+    def _reset(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            self._state.reset_operation('baseline', ids)
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be reset", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        y_input = np.array(
-            self._state.cosmic_clean_y.get(spec.id, spec.y),
-            dtype=np.float64,
-        )
-        self._compute_and_store(spec.id, y_input)
-        self._state.set_baseline(enabled=True)
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._apply([spec.id])
 
     def _on_reset(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        self._state.processed_y.pop(spec.id, None)
-        self._state.baseline_y.pop(spec.id, None)
-        self._state.smoothed_y.pop(spec.id, None)
-        self._state.set_baseline(enabled=False)
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._reset([spec.id])
 
     def _on_apply_all(self) -> None:
-        for spec in self._state.spectra:
-            y_input = np.array(
-                self._state.cosmic_clean_y.get(spec.id, spec.y),
-                dtype=np.float64,
-            )
-            self._compute_and_store(spec.id, y_input)
-        self._state.set_baseline(enabled=True)
-        self._state.spectra_changed.emit()
+        self._apply([spec.id for spec in self._state.spectra])
 
     def _on_reset_all(self) -> None:
-        self._state.processed_y.clear()
-        self._state.baseline_y.clear()
-        self._state.smoothed_y.clear()
-        self._state.set_baseline(enabled=False)
-        self._state.spectra_changed.emit()
-
+        self._reset([spec.id for spec in self._state.spectra])

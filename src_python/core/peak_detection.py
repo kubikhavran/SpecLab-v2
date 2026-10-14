@@ -6,6 +6,7 @@ Replaces the manual JS implementation in detectPeaks.ts.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from bisect import bisect_left, insort
 from typing import List, Optional
 
 import numpy as np
@@ -20,6 +21,8 @@ class DetectedPeak:
     y: float
     i: int
     prominence: float
+    kind: str = 'max'
+    width: Optional[float] = None
 
 
 def detect_peaks(
@@ -50,7 +53,17 @@ def detect_peaks(
     """
     xa = np.asarray(x, dtype=np.float64)
     ya = np.asarray(y, dtype=np.float64)
-    n = min(len(xa), len(ya))
+    if xa.ndim != 1 or ya.ndim != 1 or len(xa) != len(ya):
+        raise ValueError('Peak detection requires equally sized one-dimensional X/Y arrays.')
+    if not np.all(np.isfinite(xa)) or not np.all(np.isfinite(ya)):
+        raise ValueError('Peak detection requires finite data.')
+    if polarity not in {'max', 'min', 'both'}:
+        raise ValueError('Unknown peak polarity.')
+    if not np.isfinite(min_prominence) or min_prominence < 0 or not np.isfinite(min_distance_x) or min_distance_x < 0:
+        raise ValueError('Peak prominence and distance must be finite and nonnegative.')
+    if isinstance(max_peaks, bool) or not isinstance(max_peaks, int) or not 1 <= max_peaks <= 10000:
+        raise ValueError('Maximum peak count must be an integer between 1 and 10000.')
+    n = len(xa)
     if n < 3:
         return []
 
@@ -63,28 +76,23 @@ def detect_peaks(
         region_mask = (xa >= lo) & (xa <= hi)
     else:
         region_mask = np.ones(n, dtype=bool)
-
-    # Convert min_distance_x to sample distance
-    if n > 1:
-        dx_median = np.median(np.abs(np.diff(xa)))
-        if dx_median > 0:
-            distance_samples = max(1, int(round(min_distance_x / dx_median)))
-        else:
-            distance_samples = 1
-    else:
-        distance_samples = 1
+        if x_min is not None:
+            region_mask &= xa >= x_min
+        if x_max is not None:
+            region_mask &= xa <= x_max
 
     results: List[DetectedPeak] = []
+    sample_indices = np.arange(n)
 
     def _find(signal: np.ndarray, invert: bool = False) -> None:
         indices, props = find_peaks(
             signal,
-            prominence=max(0, min_prominence) if min_prominence > 0 else None,
-            distance=distance_samples,
+            prominence=(min_prominence, None),
+            width=(0, None),
         )
         proms = props.get("prominences", np.zeros(len(indices)))
 
-        for idx, prom in zip(indices, proms):
+        for position, (idx, prom) in enumerate(zip(indices, proms)):
             if not region_mask[idx]:
                 continue
             if min_prominence > 0 and prom < min_prominence:
@@ -94,6 +102,9 @@ def detect_peaks(
                 y=float(ya[idx]),
                 i=int(idx),
                 prominence=float(prom),
+                kind='min' if invert else 'max',
+                width=float(abs(np.interp(props['right_ips'][position], sample_indices, xa)
+                                - np.interp(props['left_ips'][position], sample_indices, xa))),
             ))
 
     if polarity in ("max", "both"):
@@ -103,7 +114,17 @@ def detect_peaks(
 
     # Sort by prominence descending, pick top max_peaks
     results.sort(key=lambda p: p.prominence, reverse=True)
-    selected = results[:max(1, max_peaks)]
+    selected = []
+    selected_positions = []
+    for candidate in results:
+        # Suppress by actual X distance, including irregular sampling and mixed polarity.
+        insertion = bisect_left(selected_positions, candidate.x)
+        neighbours = selected_positions[max(0, insertion - 1):insertion + 1]
+        if all(abs(candidate.x - position) >= min_distance_x for position in neighbours):
+            selected.append(candidate)
+            insort(selected_positions, candidate.x)
+            if len(selected) >= max_peaks:
+                break
 
     # Return sorted by x
     selected.sort(key=lambda p: p.x)
@@ -118,8 +139,9 @@ def detected_to_peaks(detected: List[DetectedPeak]) -> List[Peak]:
             x=d.x,
             source="auto",
             i=d.i,
-            kind="max",
+            kind=d.kind,
             prominence=d.prominence,
+            width=d.width,
         )
         for d in detected
     ]

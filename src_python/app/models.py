@@ -16,7 +16,7 @@ class Spectrum:
     id: str = field(default_factory=_new_id)
     name: str = ""
     x: List[float] = field(default_factory=list)    # wavenumber / wavelength
-    y: List[float] = field(default_factory=list)    # raw intensity
+    y: List[float] = field(default_factory=list)    # current editable ordinate
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -77,7 +77,11 @@ class PeaksSettings:
     source: str = "displayed"   # "displayed" | "processed"
     polarity: str = "max"       # "max" | "min" | "both"
     min_prominence: float = 20.0
-    min_distance: int = 10
+    min_distance: float = 10.0
+    mixed_defaults: bool = True
+    region_enabled: bool = False
+    x_min: Optional[float] = None
+    x_max: Optional[float] = None
     max_peaks: int = 20
     manual_pick_enabled: bool = False
     show_markers: bool = True
@@ -119,6 +123,9 @@ class GraphicsSettings:
     tick_font_size: int = 30
     palette: str = "auto"
     inline_spectrum_labels: bool = True
+    spectrum_label_bold: bool = False
+    spectrum_label_italic: bool = False
+    preview_canvas_size: bool = False
     plot_canvas: str = "auto"         # "auto" | "white" | "dark"
     export_width: int = 1600
     export_height: int = 900

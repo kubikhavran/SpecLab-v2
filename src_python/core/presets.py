@@ -1,354 +1,385 @@
-"""
-Preset storage - save/load application setting snapshots to JSON.
-"""
+"""Validated preset recipes and migration of the original SpecLab JSON format."""
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 import os
+from dataclasses import asdict, fields
+from datetime import datetime, timezone
+from pathlib import Path
+import re
+import tempfile
 import uuid
-from dataclasses import fields
-from datetime import datetime
-from typing import Any, Dict, List, Optional
 
-import numpy as np
+from app.models import SPECTRAL_MODES
+from core.processing import validate_operations
+from core.project_io import SETTINGS, settings_from_dict
 
-from core.baseline import apply_baseline, asls_baseline
-from core.cosmic import remove_cosmic_rays
-from core.peak_detection import detect_peaks, detected_to_peaks
-from core.smoothing import savgol_smooth
-
-PRESETS_FILENAME = "speclab_presets.json"
+PRESETS_FILENAME = 'speclab_presets.json'
+_SECTIONS = set(SETTINGS)
+_PAYLOAD_KEYS = _SECTIONS | {'spectral_mode', 'pipeline', 'migration'}
+_PIPELINE_KEYS = {
+    'operations', 'recipe_scope', 'source_spectrum_name', 'from_original',
+    'auto_peaks_applied', 'cosmic_applied', 'baseline_applied', 'smoothing_applied', 'raw_only',
+}
 
 
 def _get_presets_path() -> str:
-    """Return the path to the presets JSON file in user's config directory."""
-    config_dir = os.path.join(os.path.expanduser("~"), ".speclab")
-    os.makedirs(config_dir, exist_ok=True)
-    return os.path.join(config_dir, PRESETS_FILENAME)
+    directory = Path.home() / '.speclab'
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / PRESETS_FILENAME)
 
 
-def _dataclass_to_dict(obj) -> dict:
-    """Convert a dataclass instance to a dict, handling special field names."""
-    result = {}
-    for f in fields(obj):
-        val = getattr(obj, f.name)
-        result[f.name] = val
+def _string(value, label, limit=1024):
+    if not isinstance(value, str) or len(value) > limit:
+        raise ValueError(f'{label} must be a string of at most {limit} characters.')
+    return value
+
+
+def _timestamp(value, label):
+    if value is None:
+        return datetime.now(timezone.utc).isoformat()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(value):
+            raise ValueError(f'{label} must be finite.')
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError) as error:
+            raise ValueError(f'Invalid {label}.') from error
+    text = _string(value, label, 100)
+    try:
+        datetime.fromisoformat(text.replace('Z', '+00:00'))
+    except ValueError as error:
+        raise ValueError(f'Invalid {label}.') from error
+    return text
+
+
+def _snake(key):
+    return re.sub(r'(?<!^)(?=[A-Z])', '_', key).lower()
+
+
+def _validate_pipeline(pipeline):
+    if not isinstance(pipeline, dict) or set(pipeline) - _PIPELINE_KEYS:
+        raise ValueError('Preset contains an invalid or unknown pipeline field.')
+    result = copy.deepcopy(pipeline)
+    for key in ('from_original', 'auto_peaks_applied', 'cosmic_applied',
+                'baseline_applied', 'smoothing_applied', 'raw_only'):
+        if key in result and not isinstance(result[key], bool):
+            raise ValueError(f'Pipeline {key} must be a boolean.')
+    if 'operations' in result:
+        operations = result['operations']
+        if not isinstance(operations, list):
+            raise ValueError('Preset operations must be a list.')
+        result['operations'] = validate_operations(operations) if operations else []
+    if 'recipe_scope' in result and result['recipe_scope'] not in {'active_spectrum', 'all'}:
+        raise ValueError('Invalid preset recipe scope.')
+    if result.get('source_spectrum_name') is not None:
+        _string(result['source_spectrum_name'], 'Source spectrum name')
+    if result.get('raw_only') and any(result.get(k) for k in
+                                      ('operations', 'cosmic_applied', 'baseline_applied', 'smoothing_applied')):
+        raise ValueError('A raw-only preset cannot also contain processing steps.')
     return result
 
 
-def _dict_to_dataclass(cls, data: dict):
-    """Create a dataclass instance from a dict, ignoring unknown keys."""
-    valid_fields = {f.name for f in fields(cls)}
-    filtered = {k: v for k, v in data.items() if k in valid_fields}
-    return cls(**filtered)
+def _validate_labeling(value):
+    """Retain unsupported v1 naming settings for reference, never silently discard."""
+    if not isinstance(value, dict):
+        raise ValueError('Legacy dataLabeling must be an object.')
+    enums = {'renumberMode': {'index', 'sequence', 'extract'}}
+    strings = {'renumberPrefix', 'sequenceStart', 'sequenceStep', 'sequenceSuffix'}
+    allowed = set(enums) | strings | {'invertOrder', 'labelExtract'}
+    if set(value) - allowed:
+        raise ValueError('Unknown legacy dataLabeling setting.')
+    for key, item in value.items():
+        if key in enums:
+            if not isinstance(item, str) or item not in enums[key]:
+                raise ValueError(f'Invalid dataLabeling.{key}.')
+        elif key in strings:
+            _string(item, f'dataLabeling.{key}')
+        elif key == 'invertOrder' and not isinstance(item, bool):
+            raise ValueError('dataLabeling.invertOrder must be a boolean.')
+        elif key == 'labelExtract':
+            if not isinstance(item, dict):
+                raise ValueError('labelExtract must be an object.')
+            text_keys = {'start', 'end', 'prefix', 'suffix', 'regex'}
+            bool_keys = {'trimResult', 'numbersOnly'}
+            if set(item) - (text_keys | bool_keys | {'mode', 'preset'}):
+                raise ValueError('Unknown legacy labelExtract setting.')
+            for k, v in item.items():
+                if k in text_keys:
+                    _string(v, f'labelExtract.{k}')
+                elif k in bool_keys and not isinstance(v, bool):
+                    raise ValueError(f'labelExtract.{k} must be a boolean.')
+                elif k == 'mode' and v not in ('none', 'filename'):
+                    raise ValueError('Invalid labelExtract mode.')
+                elif k == 'preset' and v not in ('mv', 'firstNumber', 'lastNumber', 'regex', 'slice'):
+                    raise ValueError('Invalid labelExtract preset.')
+    return copy.deepcopy(value)
 
 
-def _payload_section(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
-    """Return a payload subsection if it is a dict, otherwise an empty dict."""
-    data = payload.get(key, {})
-    return data if isinstance(data, dict) else {}
+def _region_bound(value, label):
+    if not isinstance(value, str):
+        raise ValueError(f'{label} must be a text number.')
+    if not value.strip():
+        return None
+    try:
+        number = float(value.replace(',', '.'))
+    except ValueError as error:
+        raise ValueError(f'Invalid {label}.') from error
+    if not math.isfinite(number):
+        raise ValueError(f'{label} must be finite.')
+    return number
 
 
-def _cache_present_for_loaded_spectra(state, cache: Dict[str, Any]) -> bool:
-    """Return True if cache has data for at least one currently loaded spectrum."""
-    if not isinstance(cache, dict):
-        return False
-    spectra = getattr(state, "spectra", [])
-    if not spectra:
-        return bool(cache)
-    loaded_ids = {spec.id for spec in spectra}
-    return any(spec_id in cache for spec_id in loaded_ids)
+def _migrate_v1(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('Legacy preset payload must be an object.')
+    allowed = {'themeMode', 'plot', 'graphics', 'baseline', 'smoothing',
+               'cosmic', 'dataLabeling', 'peaksSettings'}
+    if set(payload) - allowed:
+        raise ValueError('Unknown original SpecLab preset field.')
+    result, warnings, migration = {}, [], {'source_format': 'SpecLab-v1'}
+    for section in ('plot', 'graphics', 'baseline', 'smoothing', 'cosmic', 'peaksSettings'):
+        value = payload.get(section, {})
+        if not isinstance(value, dict):
+            raise ValueError(f'Legacy {section} must be an object.')
+        target = 'peaks' if section == 'peaksSettings' else section
+        names = {field.name for field in fields(SETTINGS[target][1])}
+        mapped = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError('Preset setting names must be strings.')
+            if key == 'uiRevision' and section == 'plot':
+                if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+                    raise ValueError('Invalid legacy plot.uiRevision.')
+                continue  # A rendering counter is regenerated by the new canvas.
+            if section == 'peaksSettings' and key == 'labelPlacement':
+                if item != 'leader':
+                    raise ValueError('Unsupported legacy peak label placement.')
+                continue
+            overrides = {'lambda': 'lambda_', 'useRegion': 'region_enabled',
+                         'regionXMin': 'x_min', 'regionXMax': 'x_max'}
+            name = overrides.get(key, _snake(key))
+            if name not in names:
+                raise ValueError(f'Unsupported legacy setting {section}.{key}.')
+            mapped[name] = (_region_bound(item, key) if key in {'regionXMin', 'regionXMax'} else item)
+        # Original TypeScript defaults differed from the older Python defaults.
+        if target == 'peaks':
+            mapped.setdefault('min_prominence', 0.0)
+        result[target] = asdict(settings_from_dict(SETTINGS[target][1], mapped))
+    if 'themeMode' in payload:
+        theme = payload['themeMode']
+        if not isinstance(theme, str) or theme not in {'system', 'light', 'dark'}:
+            raise ValueError('Invalid legacy interface theme.')
+        migration['theme_mode'] = theme
+        warnings.append('The original interface theme is retained for reference; choose the global theme in Appearance.')
+    if 'dataLabeling' in payload:
+        migration['legacy_data_labeling'] = _validate_labeling(payload['dataLabeling'])
+        warnings.append('Original automatic naming settings are retained for reference; apply naming with the spectrum tools.')
+    # v1 never recorded whether cosmic removal or smoothing was applied.
+    # Reconstruct only a stage whose activation can be established.
+    baseline = result['baseline']
+    recipe = []
+    if baseline['enabled']:
+        recipe.append({'op': 'baseline', 'params': {'lam': baseline['lambda_'],
+                       'p': baseline['p'], 'iterations': baseline['iterations']}})
+    result['pipeline'] = {'operations': recipe, 'from_original': True,
+                          'auto_peaks_applied': False, 'recipe_scope': 'all'}
+    warnings.append('V1 did not record the processing history. Only an enabled baseline is recovered; cosmic removal, smoothing and automatic peaks must be applied explicitly.')
+    if result['peaks'].get('region_enabled'):
+        plot = result['plot']
+        if plot.get('x_min') is not None and plot.get('x_max') is not None:
+            result['peaks']['x_min'], result['peaks']['x_max'] = plot['x_min'], plot['x_max']
+    result['migration'] = migration
+    return result, warnings
 
 
-def _capture_pipeline_state(state) -> Dict[str, Any]:
-    """
-    Capture which processing stages are currently materialized in AppState caches.
-
-    These flags are used by preset restore to decide whether to recompute or clear
-    each processing stage for currently loaded spectra.
-    """
-    cosmic_applied = _cache_present_for_loaded_spectra(state, state.cosmic_clean_y)
-    baseline_applied = (
-        _cache_present_for_loaded_spectra(state, state.processed_y)
-        or _cache_present_for_loaded_spectra(state, state.baseline_y)
-        or bool(getattr(state.baseline, "enabled", False))
-    )
-    smoothing_applied = _cache_present_for_loaded_spectra(state, state.smoothed_y)
-    auto_peaks_applied = _cache_present_for_loaded_spectra(state, state.peaks_auto)
-    return {
-        "cosmic_applied": cosmic_applied,
-        "baseline_applied": baseline_applied,
-        "smoothing_applied": smoothing_applied,
-        "auto_peaks_applied": auto_peaks_applied,
-        "raw_only": not (
-            cosmic_applied
-            or baseline_applied
-            or smoothing_applied
-            or auto_peaks_applied
-        ),
-    }
-
-
-def _resolve_pipeline_state(payload: Dict[str, Any]) -> Dict[str, bool]:
-    """
-    Resolve processing stage flags from payload with backward-compatible defaults.
-
-    Older presets may not contain payload['pipeline'].
-    """
-    pipeline = _payload_section(payload, "pipeline")
-    baseline_payload = _payload_section(payload, "baseline")
-    peaks_payload = _payload_section(payload, "peaks")
-
-    raw_only = bool(pipeline.get("raw_only", False))
-    has_stage_keys = any(
-        key in pipeline
-        for key in (
-            "cosmic_applied",
-            "baseline_applied",
-            "smoothing_applied",
-            "auto_peaks_applied",
-        )
-    )
-
-    if raw_only and not has_stage_keys:
-        return {
-            "cosmic_applied": False,
-            "baseline_applied": False,
-            "smoothing_applied": False,
-            "auto_peaks_applied": False,
-        }
-
-    return {
-        "cosmic_applied": bool(pipeline.get("cosmic_applied", False)),
-        "baseline_applied": bool(
-            pipeline.get(
-                "baseline_applied",
-                baseline_payload.get("enabled", False),
-            )
-        ),
-        "smoothing_applied": bool(pipeline.get("smoothing_applied", False)),
-        "auto_peaks_applied": bool(
-            pipeline.get(
-                "auto_peaks_applied",
-                peaks_payload.get("enabled", False),
-            )
-        ),
-    }
-
-
-def _recompute_pipeline_from_preset(state, pipeline_state: Dict[str, bool]) -> None:
-    """
-    Rebuild processing caches for currently loaded spectra to match preset state.
-
-    Order is fixed:
-      cosmic -> baseline -> smoothing -> auto peak detection
-    Manual peaks are intentionally preserved.
-    """
-    spectra = list(getattr(state, "spectra", []))
-
-    # Cosmic stage
-    state.cosmic_clean_y.clear()
-    if pipeline_state["cosmic_applied"]:
-        c = state.cosmic
-        for spec in spectra:
-            result = remove_cosmic_rays(
-                spec.y,
-                window=c.window,
-                threshold=c.threshold,
-                max_width=c.max_width,
-                positive_only=c.positive_only,
-                iterations=c.iterations,
-            )
-            state.cosmic_clean_y[spec.id] = result.y_clean
-
-    # Baseline stage
-    state.processed_y.clear()
-    state.baseline_y.clear()
-    if pipeline_state["baseline_applied"]:
-        b = state.baseline
-        for spec in spectra:
-            y_input = np.array(
-                state.cosmic_clean_y.get(spec.id, spec.y),
-                dtype=np.float64,
-            )
-            baseline = asls_baseline(
-                y_input,
-                lam=b.lambda_,
-                p=b.p,
-                n_iter=b.iterations,
-            )
-            corrected = apply_baseline(y_input, baseline)
-            state.baseline_y[spec.id] = baseline.tolist()
-            state.processed_y[spec.id] = corrected.tolist()
-
-    # Smoothing stage
-    state.smoothed_y.clear()
-    if pipeline_state["smoothing_applied"]:
-        s = state.smoothing
-        for spec in spectra:
-            if spec.id in state.processed_y:
-                y_input = np.array(state.processed_y[spec.id], dtype=np.float64)
-            elif spec.id in state.cosmic_clean_y:
-                y_input = np.array(state.cosmic_clean_y[spec.id], dtype=np.float64)
-            else:
-                y_input = np.array(spec.y, dtype=np.float64)
-            smooth = savgol_smooth(
-                y_input,
-                window=s.window,
-                poly_order=s.poly_order,
-            )
-            state.smoothed_y[spec.id] = smooth.tolist()
-
-    # Peak detection stage (auto peaks only). Manual peaks are preserved.
-    state.peaks_auto.clear()
-    should_detect_auto = (
-        pipeline_state["auto_peaks_applied"] and state.peaks_settings.enabled
-    )
-    if should_detect_auto:
-        p = state.peaks_settings
-        for spec in spectra:
-            y_data = state.displayed_y(spec.id)
-            if y_data is None:
-                y_data = spec.y
-            detected = detect_peaks(
-                spec.x,
-                y_data,
-                min_prominence=p.min_prominence,
-                min_distance_x=p.min_distance,
-                max_peaks=p.max_peaks,
-                polarity=p.polarity if hasattr(p, "polarity") else "max",
-            )
-            state.peaks_auto[spec.id] = detected_to_peaks(detected)
+def normalize_preset_payload(payload, legacy=False):
+    """Fully validate before importing or mutating a workspace."""
+    if not isinstance(payload, dict):
+        raise ValueError('Preset payload must be an object.')
+    warnings = []
+    if legacy or any(key in payload for key in ('themeMode', 'dataLabeling', 'peaksSettings')):
+        payload, warnings = _migrate_v1(payload)
+    if set(payload) - _PAYLOAD_KEYS:
+        raise ValueError(f'Unknown preset fields: {", ".join(sorted(set(payload) - _PAYLOAD_KEYS))}.')
+    result = {}
+    for key in _SECTIONS:
+        if key in payload:
+            result[key] = asdict(settings_from_dict(SETTINGS[key][1], payload[key]))
+    if 'spectral_mode' in payload:
+        mode = payload['spectral_mode']
+        if not isinstance(mode, str) or mode not in SPECTRAL_MODES:
+            raise ValueError('Unknown preset spectral mode.')
+        result['spectral_mode'] = mode
+    if 'pipeline' in payload:
+        result['pipeline'] = _validate_pipeline(payload['pipeline'])
+    if 'migration' in payload:
+        migration = payload['migration']
+        if not isinstance(migration, dict):
+            raise ValueError('Preset migration notes must be an object.')
+        # Only known inert migration data can pass through export/import.
+        if set(migration) - {'source_format', 'theme_mode', 'legacy_data_labeling'}:
+            raise ValueError('Unknown preset migration information.')
+        if 'legacy_data_labeling' in migration:
+            _validate_labeling(migration['legacy_data_labeling'])
+        if 'source_format' in migration:
+            _string(migration['source_format'], 'Migration source', 100)
+        if 'theme_mode' in migration and migration['theme_mode'] not in {'system', 'light', 'dark'}:
+            raise ValueError('Invalid migration theme.')
+        result['migration'] = copy.deepcopy(migration)
+    return result, warnings
 
 
 class Preset:
-    """A named snapshot of application settings."""
+    """A validated named snapshot, with visible notices for legacy migration."""
 
-    def __init__(
-        self,
-        name: str,
-        preset_id: Optional[str] = None,
-        created_at: Optional[str] = None,
-        updated_at: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
-    ):
-        self.id = preset_id or uuid.uuid4().hex
-        self.name = name
-        self.created_at = created_at or datetime.now().isoformat()
-        self.updated_at = updated_at or self.created_at
-        self.payload = payload or {}
+    def __init__(self, name, preset_id=None, created_at=None, updated_at=None,
+                 payload=None, warnings=None):
+        self.name = _string(name, 'Preset name', 200).strip()
+        if not self.name:
+            raise ValueError('Preset name cannot be empty.')
+        self.id = uuid.uuid4().hex if preset_id is None else _string(preset_id, 'Preset id', 200)
+        if not self.id:
+            raise ValueError('Preset id cannot be empty.')
+        self.created_at = _timestamp(created_at, 'Creation time')
+        self.updated_at = _timestamp(updated_at, 'Update time') if updated_at is not None else self.created_at
+        self.payload, migration_warnings = normalize_preset_payload({} if payload is None else payload)
+        if warnings is not None and (not isinstance(warnings, list) or
+                                     any(not isinstance(w, str) or len(w) > 2000 for w in warnings)):
+            raise ValueError('Preset notices must be a list of short strings.')
+        self.warnings = list(dict.fromkeys((warnings or []) + migration_warnings))
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "payload": self.payload,
-        }
+    def to_dict(self):
+        # Revalidate mutable presets before they are persisted/exported.
+        payload, notices = normalize_preset_payload(self.payload)
+        return {'id': self.id, 'name': _string(self.name, 'Preset name', 200),
+                'created_at': _timestamp(self.created_at, 'Creation time'),
+                'updated_at': _timestamp(self.updated_at, 'Update time'), 'payload': payload,
+                'warnings': list(dict.fromkeys(self.warnings + notices))}
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Preset":
-        return cls(
-            name=data.get("name", "Unnamed"),
-            preset_id=data.get("id"),
-            created_at=data.get("created_at"),
-            updated_at=data.get("updated_at"),
-            payload=data.get("payload", {}),
-        )
+    def from_dict(cls, data, legacy=False):
+        if not isinstance(data, dict):
+            raise ValueError('Every preset must be an object.')
+        allowed = {'id', 'name', 'payload', 'created_at', 'updated_at', 'createdAt', 'updatedAt', 'warnings'}
+        if set(data) - allowed or 'name' not in data or 'payload' not in data:
+            raise ValueError('Invalid preset record; name and payload are required.')
+        payload, notices = normalize_preset_payload(data['payload'], legacy)
+        warnings = data.get('warnings', [])
+        if not isinstance(warnings, list) or any(not isinstance(w, str) for w in warnings):
+            raise ValueError('Preset notices must be strings.')
+        return cls(data['name'], data.get('id'), data.get('created_at', data.get('createdAt')),
+                   data.get('updated_at', data.get('updatedAt')), payload, warnings + notices)
 
 
-def capture_preset_payload(state) -> Dict[str, Any]:
-    """Capture current settings from AppState into a preset payload dict."""
+def capture_preset_payload(state):
+    active = state.active_spectrum
     return {
-        "spectral_mode": state.spectral_mode,
-        "plot": _dataclass_to_dict(state.plot),
-        "graphics": _dataclass_to_dict(state.graphics),
-        "baseline": _dataclass_to_dict(state.baseline),
-        "smoothing": _dataclass_to_dict(state.smoothing),
-        "cosmic": _dataclass_to_dict(state.cosmic),
-        "peaks": _dataclass_to_dict(state.peaks_settings),
-        "pipeline": _capture_pipeline_state(state),
+        'spectral_mode': state.spectral_mode,
+        **{key: asdict(getattr(state, attribute)) for key, (attribute, _) in SETTINGS.items()},
+        'pipeline': {
+            'operations': state.processing_recipe(active.id) if active else [],
+            'recipe_scope': 'active_spectrum', 'source_spectrum_name': active.name if active else None,
+            'auto_peaks_applied': bool(state.peaks_auto.get(active.id)) if active else False,
+            'from_original': True,
+        },
     }
 
 
-def apply_preset_payload(state, payload: Dict[str, Any]) -> None:
-    """
-    Apply a preset payload back to AppState.
-
-    This restores settings and then materializes the full processing pipeline
-    (cosmic -> baseline -> smoothing -> auto peaks) for currently loaded spectra.
-    """
-    plot_payload = _payload_section(payload, "plot")
-    graphics_payload = _payload_section(payload, "graphics")
-    baseline_payload = _payload_section(payload, "baseline")
-    smoothing_payload = _payload_section(payload, "smoothing")
-    cosmic_payload = _payload_section(payload, "cosmic")
-    peaks_payload = _payload_section(payload, "peaks")
-
-    mode = payload.get("spectral_mode", "custom")
-    if isinstance(mode, str):
-        state.set_spectral_mode(mode, apply_defaults=False)
-
-    if plot_payload:
-        state.set_plot(**plot_payload)
-    if graphics_payload:
-        state.set_graphics(**graphics_payload)
-    if baseline_payload:
-        state.set_baseline(**baseline_payload)
-    if smoothing_payload:
-        state.set_smoothing(**smoothing_payload)
-    if cosmic_payload:
-        state.set_cosmic(**cosmic_payload)
-    if peaks_payload:
-        state.set_peaks(**peaks_payload)
-
-    pipeline_state = _resolve_pipeline_state(payload)
-    _recompute_pipeline_from_preset(state, pipeline_state)
-
-    # Ensure plot and peak overlays refresh after cache recomputation.
-    state.spectra_changed.emit()
-    state.peaks_changed.emit()
+def apply_preset_payload(state, payload, apply_recipe=True):
+    """Settings-only never changes data; recipe replay is explicit and atomic."""
+    payload, _ = normalize_preset_payload(payload)
+    settings = {key: payload[key] for key in _SECTIONS if key in payload}
+    if 'spectral_mode' in payload:
+        settings['spectral_mode'] = payload['spectral_mode']
+    recipe, detect_auto = None, False
+    if apply_recipe:
+        pipeline = payload.get('pipeline', {})
+        if 'operations' in pipeline:
+            recipe = pipeline['operations']
+        elif pipeline:
+            recipe = []
+            c = settings_from_dict(SETTINGS['cosmic'][1], settings.get('cosmic', {}))
+            b = settings_from_dict(SETTINGS['baseline'][1], settings.get('baseline', {}))
+            s = settings_from_dict(SETTINGS['smoothing'][1], settings.get('smoothing', {}))
+            if pipeline.get('cosmic_applied'):
+                recipe.append({'op': 'despike', 'params': {'window': c.window, 'threshold': c.threshold,
+                               'max_width': c.max_width, 'positive_only': c.positive_only, 'iterations': c.iterations}})
+            if pipeline.get('baseline_applied', b.enabled):
+                recipe.append({'op': 'baseline', 'params': {'lam': b.lambda_, 'p': b.p, 'iterations': b.iterations}})
+            if pipeline.get('smoothing_applied'):
+                recipe.append({'op': 'smooth', 'params': {'window': s.window, 'poly_order': s.poly_order}})
+        elif settings.get('baseline', {}).get('enabled'):
+            b = settings['baseline']
+            recipe = [{'op': 'baseline', 'params': {'lam': b['lambda_'], 'p': b['p'], 'iterations': b['iterations']}}]
+        detect_auto = bool(pipeline.get('auto_peaks_applied', False))
+    return state.apply_preset(settings, recipe=recipe, detect_auto=detect_auto)
 
 
-def load_presets() -> List[Preset]:
-    """Load presets from disk. Returns empty list if file doesn't exist."""
-    path = _get_presets_path()
-    if not os.path.exists(path):
-        return []
+def _read_presets(path):
+    target = Path(path)
+    if target.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError('Preset file exceeds the 10 MB limit.')
+    with target.open(encoding='utf-8') as handle:
+        document = json.load(handle, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Nonfinite preset JSON.')))
+    legacy = False
+    if isinstance(document, dict):
+        version = document.get('schemaVersion')
+        if type(version) is not int or version not in {1, 2} or document.get('app') != 'SpecLab':
+            raise ValueError('Unsupported SpecLab preset schema or application.')
+        entries, legacy = document.get('presets'), version == 1
+    else:
+        entries = document  # Previous Python versions used a plain JSON list.
+    if not isinstance(entries, list) or len(entries) > 1000:
+        raise ValueError('Preset file must contain a list of at most 1000 presets.')
+    presets, ids = [], set()
+    for index, item in enumerate(entries):
+        try:
+            preset = Preset.from_dict(item, legacy=legacy)
+        except (ValueError, TypeError) as error:
+            raise ValueError(f'Preset {index + 1}: {error}') from error
+        if preset.id in ids:
+            raise ValueError('Preset file contains duplicate ids.')
+        ids.add(preset.id)
+        presets.append(preset)
+    return presets
+
+
+def load_presets():
+    path = Path(_get_presets_path())
+    return _read_presets(path) if path.exists() else []
+
+
+def _write_presets(presets, filepath):
+    entries = [preset.to_dict() for preset in presets]
+    document = {'schemaVersion': 2, 'app': 'SpecLab',
+                'exportedAt': datetime.now(timezone.utc).isoformat(), 'presets': entries}
+    encoded = json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False)
+    target = Path(filepath)
+    temporary = None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return [Preset.from_dict(item) for item in data if isinstance(item, dict)]
-    except (json.JSONDecodeError, OSError):
-        pass
-    return []
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=target.parent,
+                                         prefix=f'.{target.name}.', suffix='.tmp', delete=False) as handle:
+            temporary = handle.name
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
-def save_presets(presets: List[Preset]) -> None:
-    """Save all presets to disk."""
-    path = _get_presets_path()
-    try:
-        data = [p.to_dict() for p in presets]
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except OSError:
-        pass
+def save_presets(presets):
+    _write_presets(presets, _get_presets_path())
 
 
-def export_presets_to_file(presets: List[Preset], filepath: str) -> None:
-    """Export presets to a user-chosen JSON file."""
-    data = [p.to_dict() for p in presets]
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def export_presets_to_file(presets, filepath):
+    _write_presets(presets, filepath)
 
 
-def import_presets_from_file(filepath: str) -> List[Preset]:
-    """Import presets from a user-chosen JSON file."""
-    with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, list):
-        return [Preset.from_dict(item) for item in data if isinstance(item, dict)]
-    return []
+def import_presets_from_file(filepath):
+    return _read_presets(filepath)

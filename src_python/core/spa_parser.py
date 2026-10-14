@@ -13,7 +13,7 @@ all OMNIC variants. The parser therefore combines:
   - conservative text pattern extraction for peak positions and labels
 
 The parser is intentionally defensive:
-  - malformed sections are skipped
+  - malformed or truncated primary sections are rejected
   - unknown variants raise SPAParseError with a clear message
 """
 
@@ -22,14 +22,12 @@ from __future__ import annotations
 import re
 import struct
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 
 
 _SIGNATURE = b"Spectral Data File"
-_BASE_TIME = datetime(1899, 12, 31, tzinfo=timezone.utc)
 _ENTRY_SIZE = 16
 _ENTRY_START = 304
 _TEXT_KEYS = {4, 27, 130, 146}
@@ -54,8 +52,6 @@ _NOISE_LABELS = {
     "amplitude",
 }
 _NUM_TOKEN_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?")
-_ASCII_BLOCK_RE = re.compile(rb"[\x09\x0A\x0D\x20-\x7E]{24,}")
-_UTF16_BLOCK_RE = re.compile(rb"(?:[\x20-\x7E]\x00){12,}")
 
 _X_UNIT_MAP = {
     1: ("cm^-1", "wavenumber"),
@@ -73,6 +69,7 @@ _Y_UNIT_MAP = {
     20: ("Kubelka_Munk", "Kubelka-Munk"),
     21: (None, "reflectance"),
     22: ("V", "detector signal"),
+    23: (None, "transmittance"),
     26: (None, "photoacoustic"),
     31: (None, "Raman intensity"),
 }
@@ -125,28 +122,10 @@ def _read_u32(blob: bytes, offset: int) -> int:
     return struct.unpack_from("<I", blob, offset)[0]
 
 
-def _read_i32(blob: bytes, offset: int) -> int:
-    if offset < 0 or offset + 4 > len(blob):
-        raise SPAParseError("Unexpected end of SPA file")
-    return struct.unpack_from("<i", blob, offset)[0]
-
-
 def _read_f32(blob: bytes, offset: int) -> float:
     if offset < 0 or offset + 4 > len(blob):
         raise SPAParseError("Unexpected end of SPA file")
     return struct.unpack_from("<f", blob, offset)[0]
-
-
-def _read_text(blob: bytes, offset: int, length: int) -> str:
-    if offset < 0 or length <= 0 or offset + length > len(blob):
-        return ""
-    data = blob[offset : offset + length]
-    # Replace NUL runs with newlines for readability.
-    data = re.sub(rb"\x00+", b"\n", data)
-    text = data.decode("utf-8", errors="ignore").strip()
-    if not text:
-        text = data.decode("latin-1", errors="ignore").strip()
-    return text
 
 
 def _read_name(blob: bytes) -> str:
@@ -162,47 +141,27 @@ def _read_name(blob: bytes) -> str:
 
 
 def _scan_entries(blob: bytes) -> List[_SPAEntry]:
+    """Read the counted table; a corrupt count cannot trigger a guessed fallback."""
+    nlines = _read_u16(blob, 294)
+    table_end = _ENTRY_START + nlines * _ENTRY_SIZE
+    if not 0 < nlines <= 4096 or table_end > len(blob):
+        raise SPAParseError("Invalid or truncated SPA record table")
     entries: List[_SPAEntry] = []
-
-    # Most files expose line count here. If not sane, we fallback to sentinel scan.
-    nlines: Optional[int] = None
-    if len(blob) >= 296:
-        try:
-            candidate = _read_u16(blob, 294)
-            if 0 < candidate <= 4096:
-                nlines = int(candidate)
-        except SPAParseError:
-            nlines = None
-
-    if nlines is not None:
-        for i in range(nlines):
-            pos = _ENTRY_START + i * _ENTRY_SIZE
-            if pos + _ENTRY_SIZE > len(blob):
-                break
-            key = _read_u8(blob, pos)
-            if key in (0, 1):
-                break
-            offset = _read_u32(blob, pos + 2)
-            length = _read_u32(blob, pos + 6)
-            entries.append(_SPAEntry(key=key, offset=offset, length=length))
-        return entries
-
-    pos = _ENTRY_START
-    max_scan = min(len(blob), _ENTRY_START + 4096 * _ENTRY_SIZE)
-    while pos + _ENTRY_SIZE <= max_scan:
+    for index in range(nlines):
+        pos = _ENTRY_START + index * _ENTRY_SIZE
         key = _read_u8(blob, pos)
-        if key in (0, 1):
-            break
         offset = _read_u32(blob, pos + 2)
         length = _read_u32(blob, pos + 6)
+        if key in (0, 1) and offset == 0 and length == 0:
+            continue
+        if length and (offset < table_end or offset + length > len(blob)):
+            raise SPAParseError(f"SPA section {key} points outside the valid payload area")
         entries.append(_SPAEntry(key=key, offset=offset, length=length))
-        pos += _ENTRY_SIZE
-
     return entries
 
 
-def _parse_header(blob: bytes, header_offset: int) -> Dict[str, Any]:
-    if header_offset <= 0 or header_offset + 192 > len(blob):
+def _parse_header(blob: bytes, header_offset: int, header_length: int) -> Dict[str, Any]:
+    if header_length < 24 or header_offset <= 0 or header_offset + header_length > len(blob):
         raise SPAParseError("SPA header position is invalid")
 
     nx = _read_u32(blob, header_offset + 4)
@@ -211,7 +170,7 @@ def _parse_header(blob: bytes, header_offset: int) -> Dict[str, Any]:
 
     first_x = _read_f32(blob, header_offset + 16)
     last_x = _read_f32(blob, header_offset + 20)
-    if not np.isfinite(first_x) or not np.isfinite(last_x):
+    if not np.isfinite(first_x) or not np.isfinite(last_x) or first_x == last_x:
         raise SPAParseError("SPA header contains invalid x-axis limits")
 
     x_unit_key = _read_u8(blob, header_offset + 8)
@@ -231,15 +190,17 @@ def _parse_header(blob: bytes, header_offset: int) -> Dict[str, Any]:
         "y_title": y_title,
     }
 
-    # Additional metadata (best effort).
-    try:
-        info["n_scan"] = int(_read_u32(blob, header_offset + 36))
-        info["n_background_scan"] = int(_read_u32(blob, header_offset + 52))
-        info["collection_length_1_100_s"] = int(_read_u32(blob, header_offset + 68))
-        info["reference_frequency_cm1"] = float(_read_f32(blob, header_offset + 80))
-        info["optical_velocity"] = float(_read_f32(blob, header_offset + 188))
-    except SPAParseError:
-        pass
+    # Read only fields present in this declared block. Acquisition fields vary.
+    for key, relative_offset, reader in (
+        ("n_scan", 36, _read_u32),
+        ("n_background_scan", 52, _read_u32),
+        ("collection_length_1_100_s", 68, _read_u32),
+        ("reference_frequency_cm1", 80, _read_f32),
+    ):
+        if relative_offset + 4 <= header_length:
+            value = reader(blob, header_offset + relative_offset)
+            if np.isfinite(value):
+                info[key] = value
 
     return info
 
@@ -261,77 +222,21 @@ def _extract_main_curve(blob: bytes, entries: Iterable[_SPAEntry]) -> tuple[Dict
     if header_entry is None:
         raise SPAParseError("SPA header marker (key=2) was not found")
 
-    header = _parse_header(blob, header_entry.offset)
-
+    if sum(entry.key == 2 for entry in entries) != 1 or sum(entry.key == 3 for entry in entries) != 1:
+        raise SPAParseError("SPA requires exactly one primary header and payload")
+    header = _parse_header(blob, header_entry.offset, header_entry.length)
+    if header["x_unit_key"] == 2:
+        raise SPAParseError("SPA data-points/interferogram payload is not a supported spectrum")
     spectral_entry = next((entry for entry in entries if entry.key == 3), None)
     if spectral_entry is None:
         raise SPAParseError("SPA spectrum data marker (key=3) was not found")
-
     expected_n = int(header["nx"])
-    if spectral_entry.length >= 4 and spectral_entry.length % 4 == 0:
-        count = spectral_entry.length // 4
-    else:
-        count = expected_n
-    count = min(count, expected_n) if expected_n > 0 else count
-
-    y = _read_float_vector(blob, spectral_entry.offset, count)
-    if len(y) < 2:
-        raise SPAParseError("SPA spectrum data contains too few points")
-
+    if spectral_entry.length != expected_n * 4:
+        raise SPAParseError("SPA payload length does not match the declared point count; data will not be rescaled")
+    y = _read_float_vector(blob, spectral_entry.offset, expected_n)
+    if not np.all(np.isfinite(y)):
+        raise SPAParseError("SPA contains non-finite ordinate values")
     return header, y
-
-
-def _legacy_curve_fallback(blob: bytes) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Fallback parser for older SPA variants that may not expose full key blocks.
-    """
-    if len(blob) < 584:
-        raise SPAParseError("SPA file is too small for legacy fallback parser")
-
-    points = _read_i32(blob, 564)
-    if points < 2:
-        raise SPAParseError("Legacy SPA fallback: invalid point count")
-
-    high_x = _read_f32(blob, 576)
-    low_x = _read_f32(blob, 580)
-    if not np.isfinite(high_x) or not np.isfinite(low_x):
-        raise SPAParseError("Legacy SPA fallback: invalid x-axis limits")
-
-    data_offset = -1
-    scan_limit = min(len(blob) - 8, 4096)
-    for pos in range(288, scan_limit, 2):
-        flag = _read_u16(blob, pos)
-        if flag != 3:
-            continue
-        maybe_u32 = _read_u32(blob, pos + 2)
-        if 0 <= maybe_u32 <= len(blob) - 8:
-            data_offset = maybe_u32
-            break
-        maybe_u16 = _read_u16(blob, pos + 2)
-        if 0 <= maybe_u16 <= len(blob) - 8:
-            data_offset = maybe_u16
-            break
-
-    if data_offset < 0:
-        raise SPAParseError("Legacy SPA fallback: data offset not found")
-
-    count = min(points, (len(blob) - data_offset) // 4)
-    if count < 2:
-        raise SPAParseError("Legacy SPA fallback: not enough data points")
-
-    y = np.frombuffer(blob, dtype="<f4", count=count, offset=data_offset).astype(
-        np.float64,
-        copy=False,
-    )
-    x = np.linspace(low_x, high_x, count, dtype=np.float64)
-    return x, y
-
-
-def _is_text_like(raw: bytes) -> bool:
-    if not raw:
-        return False
-    printable = sum(1 for b in raw if b in (9, 10, 13) or 32 <= b <= 126)
-    return printable / max(1, len(raw)) >= 0.45
 
 
 def _decode_text_block(raw: bytes) -> List[str]:
@@ -373,18 +278,8 @@ def _collect_text_blocks(blob: bytes, entries: Iterable[_SPAEntry]) -> List[str]
         if entry.offset + entry.length > len(blob):
             continue
         raw = blob[entry.offset : entry.offset + entry.length]
-        if entry.key in _TEXT_KEYS or _is_text_like(raw):
+        if entry.key in _TEXT_KEYS:
             blocks.extend(_decode_text_block(raw))
-
-    for match in _ASCII_BLOCK_RE.finditer(blob):
-        text = match.group(0).decode("latin-1", errors="ignore").strip()
-        if text:
-            blocks.append(text)
-
-    for match in _UTF16_BLOCK_RE.finditer(blob):
-        text = match.group(0).decode("utf-16-le", errors="ignore").strip()
-        if text:
-            blocks.append(text)
 
     # Deduplicate big repeats.
     unique: List[str] = []
@@ -538,52 +433,28 @@ def parse_spa_file(filepath: str) -> SPAParseResult:
     if original_name:
         metadata["omnic_name"] = original_name
 
-    try:
-        raw_ts = _read_u32(blob, 296)
-        acquired = _BASE_TIME + timedelta(seconds=int(raw_ts))
-        metadata["acquired_at_utc"] = acquired.isoformat()
-    except SPAParseError:
-        pass
+    # Timestamp semantics depend on producer; preserve its raw value.
+    metadata["omnic_raw_timestamp"] = _read_u32(blob, 296)
 
     x_array: np.ndarray
     y_array: np.ndarray
 
-    try:
-        header, y_array = _extract_main_curve(blob, entries)
-        n = int(header["nx"])
-        x_array = np.linspace(
-            float(header["first_x"]),
-            float(header["last_x"]),
-            n,
-            dtype=np.float64,
-        )
-        metadata.update(
-            {
-                "x_units": header.get("x_units"),
-                "y_units": header.get("y_units"),
-                "x_title": header.get("x_title"),
-                "y_title": header.get("y_title"),
-            }
-        )
-        for key in (
-            "n_scan",
-            "n_background_scan",
-            "collection_length_1_100_s",
-            "reference_frequency_cm1",
-            "optical_velocity",
-        ):
-            if key in header:
-                metadata[key] = header[key]
-    except SPAParseError:
-        # Try fallback parser for older variants.
-        x_array, y_array = _legacy_curve_fallback(blob)
-
-    n_points = min(len(x_array), len(y_array))
-    if n_points < 2:
-        raise SPAParseError("SPA spectrum contains too few valid points")
-
-    x = x_array[:n_points].astype(np.float64, copy=False).tolist()
-    y = y_array[:n_points].astype(np.float64, copy=False).tolist()
+    header, y_array = _extract_main_curve(blob, entries)
+    x_array = np.linspace(header["first_x"], header["last_x"], header["nx"], dtype=np.float64)
+    metadata.update({"x_units": header["x_units"], "y_units": header["y_units"],
+                     "x_unit": header["x_units"] or "unknown", "x_title": header["x_title"],
+                     "y_title": header["y_title"], "y_unit": header["y_units"] or "unknown",
+                     "x_unit_code": header["x_unit_key"], "y_unit_code": header["y_unit_key"],
+                     "technique": "raman" if header["x_unit_key"] == 32 else "ir" if header["x_unit_key"] == 1 else "unknown",
+                     "y_kind": {16: "transmittance_percent", 17: "absorbance", 23: "transmittance", 31: "intensity"}.get(header["y_unit_key"], "unknown")})
+    for key in ("n_scan", "n_background_scan", "collection_length_1_100_s", "reference_frequency_cm1"):
+        if key in header:
+            metadata[key] = header[key]
+    order = np.argsort(x_array, kind="stable")
+    x = x_array[order].tolist()
+    y = y_array[order].tolist()
     peaks = _extract_peaks(blob, entries, x)
 
+    if peaks:
+        metadata["imported_peaks_source"] = "embedded_text_heuristic"
     return SPAParseResult(x=x, y=y, metadata=metadata, peaks=peaks)

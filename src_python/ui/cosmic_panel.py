@@ -5,12 +5,12 @@ Equivalent of CosmicRaysPanel.tsx.
 
 from __future__ import annotations
 
-import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
-from core.cosmic import remove_cosmic_rays
 
 
 class CosmicPanel(QWidget):
@@ -184,60 +183,44 @@ class CosmicPanel(QWidget):
     def _on_positive(self, checked: bool) -> None:
         self._state.set_cosmic(positive_only=checked)
 
-    def _apply_to(self, spectrum_id: str, y_raw: list) -> int:
-        c = self._state.cosmic
-        result = remove_cosmic_rays(
-            y_raw,
-            window=c.window,
-            threshold=c.threshold,
-            max_width=c.max_width,
-            positive_only=c.positive_only,
-            iterations=c.iterations,
-        )
-        self._state.cosmic_clean_y[spectrum_id] = result.y_clean
-        # Clear downstream
-        self._state.processed_y.pop(spectrum_id, None)
-        self._state.baseline_y.pop(spectrum_id, None)
-        self._state.smoothed_y.pop(spectrum_id, None)
-        return result.removed_count
+    def _operation(self) -> dict:
+        s = self._state.cosmic
+        return {'op': 'despike', 'params': {'window': s.window, 'threshold': s.threshold, 'max_width': s.max_width, 'positive_only': s.positive_only, 'iterations': s.iterations}}
+
+    def _apply(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            proposal = self._state.preview_operations([self._operation()], ids)
+            self._state.apply_preview(proposal)
+            total = sum(result.get('details', [{}])[-1].get('removed_count', 0)
+                        for result in proposal['results'].values())
+            self._info.setText(f"Removed: {total} spike points")
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be applied", str(error))
+
+    def _reset(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            self._state.reset_operation('despike', ids)
+            self._last_removed.clear()
+            self._info.setText("")
+        except (ValueError, ArithmeticError) as error:
+            QMessageBox.warning(self, "Processing could not be reset", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        y_in = self._state.cosmic_clean_y.get(spec.id, spec.y)
-        removed = self._apply_to(spec.id, y_in)
-        self._last_removed[spec.id] = removed
-        self._info.setText(f"Removed: {removed} spikes")
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._apply([spec.id])
 
     def _on_reset(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        self._state.cosmic_clean_y.pop(spec.id, None)
-        self._state.processed_y.pop(spec.id, None)
-        self._state.baseline_y.pop(spec.id, None)
-        self._state.smoothed_y.pop(spec.id, None)
-        self._last_removed.pop(spec.id, None)
-        self._info.setText("")
-        self._state.spectra_changed.emit()
+        if spec is not None:
+            self._reset([spec.id])
 
     def _on_apply_all(self) -> None:
-        total = 0
-        for spec in self._state.spectra:
-            y_in = self._state.cosmic_clean_y.get(spec.id, spec.y)
-            removed = self._apply_to(spec.id, y_in)
-            self._last_removed[spec.id] = removed
-            total += removed
-        self._info.setText(f"Removed total: {total} spikes")
-        self._state.spectra_changed.emit()
+        self._apply([spec.id for spec in self._state.spectra])
 
     def _on_reset_all(self) -> None:
-        self._state.cosmic_clean_y.clear()
-        self._state.processed_y.clear()
-        self._state.baseline_y.clear()
-        self._state.smoothed_y.clear()
-        self._last_removed.clear()
-        self._info.setText("")
-        self._state.spectra_changed.emit()
+        self._reset([spec.id for spec in self._state.spectra])

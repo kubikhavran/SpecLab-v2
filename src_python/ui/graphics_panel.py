@@ -1,269 +1,192 @@
-"""
-Graphics settings panel — axis labels, fonts, palettes, line widths.
-Equivalent of GraphicsPanel.tsx.
-"""
+"""Appearance controls with the complete spectrum and peak styling options."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QSlider,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
+    QCheckBox, QColorDialog, QComboBox, QFormLayout, QGroupBox,
+    QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
-
 from app.state import AppState
 
 
 _PALETTE_OPTIONS = [
-    ("Auto (default)", "auto"),
-    ("Publication Bold", "pubBold"),
-    ("Publication Colorblind", "pubColorblind"),
-    ("Tol Bright", "tolBright"),
-    ("Tol Muted", "tolMuted"),
-    ("Deep Rainbow", "deepRainbow"),
-    ("Viridis (dark)", "viridisDark"),
-    ("Plasma (dark)", "plasmaDark"),
-    ("Cividis (dark)", "cividisDark"),
-    ("Tableau 10", "tableau10"),
-    ("Dark2", "dark2"),
-    ("Paired", "paired"),
-    ("Okabe-Ito (Colorblind)", "colorblind"),
-    ("Electrochem", "electrochem"),
-    ("Monochrome", "mono"),
-    ("Neon", "neon"),
+    ('Auto', 'auto'), ('Publication Bold', 'pubBold'),
+    ('Publication Colorblind', 'pubColorblind'), ('Tol Bright', 'tolBright'),
+    ('Tol Muted', 'tolMuted'), ('Deep Rainbow', 'deepRainbow'),
+    ('Viridis dark', 'viridisDark'), ('Plasma dark', 'plasmaDark'),
+    ('Cividis dark', 'cividisDark'), ('Tableau 10', 'tableau10'),
+    ('Dark2', 'dark2'), ('Paired', 'paired'), ('Okabe–Ito', 'colorblind'),
+    ('Viridis', 'viridis'), ('Plasma', 'plasma'), ('Magma', 'magma'),
+    ('Cividis', 'cividis'), ('Electrochem', 'electrochem'),
+    ('Monochrome', 'mono'), ('Neon', 'neon'),
 ]
-
-_FONT_FAMILIES = ["Arial", "Inter", "Times New Roman", "Courier New"]
+_FONT_FAMILIES = ['Arial', 'Inter', 'Times New Roman', 'Courier New']
 
 
 class GraphicsPanel(QWidget):
-    """Controls for axis labels, fonts, palettes, line widths, frame mode."""
-
-    def __init__(self, state: AppState, parent: QWidget | None = None) -> None:
+    def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
         self._state = state
+        self._graphics_controls = {}
+        self._peak_controls = {}
         self._build_ui()
-        self._connect_signals()
-        self._sync_from_state()
+        state.graphics_changed.connect(self._sync_graphics)
+        state.peaks_changed.connect(self._sync_peaks)
+        self._sync_graphics()
+        self._sync_peaks()
 
-    def _build_ui(self) -> None:
+    def _section(self, layout, title):
+        group = QGroupBox(title)
+        form = QFormLayout(group)
+        form.setContentsMargins(10, 12, 10, 10)
+        form.setSpacing(8)
+        layout.addWidget(group)
+        return form
+
+    def _register(self, key, widget, owner):
+        controls = self._graphics_controls if owner == 'graphics' else self._peak_controls
+        controls[key] = widget
+        setter = self._state.set_graphics if owner == 'graphics' else self._state.set_peaks
+        if isinstance(widget, QCheckBox):
+            widget.toggled.connect(lambda value, k=key: setter(**{k: value}))
+        elif isinstance(widget, QSpinBox):
+            widget.valueChanged.connect(lambda value, k=key: setter(**{k: value}))
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(lambda _, k=key, w=widget: setter(**{k: w.currentData()}))
+        elif isinstance(widget, QLineEdit):
+            widget.editingFinished.connect(lambda k=key, w=widget: setter(**{k: w.text()}))
+        return widget
+
+    def _check(self, form, key, text, owner='graphics'):
+        widget = self._register(key, QCheckBox(text), owner)
+        form.addRow(widget)
+        return widget
+
+    def _spin(self, form, key, label, low, high, owner='graphics', step=1):
+        widget = QSpinBox()
+        widget.setRange(low, high)
+        widget.setSingleStep(step)
+        self._register(key, widget, owner)
+        form.addRow(label, widget)
+        return widget
+
+    def _combo(self, form, key, label, options, owner='graphics'):
+        widget = QComboBox()
+        for text, value in options:
+            widget.addItem(text, value)
+        self._register(key, widget, owner)
+        form.addRow(label, widget)
+        return widget
+
+    def _color(self, form, key, label, owner='graphics'):
+        widget = QPushButton()
+        widget.setToolTip('Choose a color')
+        self._register(key, widget, owner)
+        def choose():
+            settings = self._state.graphics if owner == 'graphics' else self._state.peaks_settings
+            selected = QColorDialog.getColor(QColor(getattr(settings, key)), self, label)
+            if selected.isValid():
+                setter = self._state.set_graphics if owner == 'graphics' else self._state.set_peaks
+                setter(**{key: selected.name()})
+        widget.clicked.connect(choose)
+        form.addRow(label, widget)
+        return widget
+
+    def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(10)
+        form = self._section(layout, 'Axis labels')
+        for key, label, placeholder in (
+            ('x_label', 'X label', 'Raman shift (cm^{-1})'),
+            ('y_label', 'Y label', 'Intensity (a.u.)'),
+        ):
+            widget = QLineEdit()
+            widget.setPlaceholderText(placeholder)
+            widget.setToolTip('Use ^{…} for superscripts and _{…} for subscripts.')
+            self._register(key, widget, 'graphics')
+            form.addRow(label, widget)
+        self._check(form, 'axis_label_bold', 'Bold labels')
+        self._check(form, 'axis_label_italic', 'Italic labels')
 
-        # ── Axis labels ──
-        labels_group = QGroupBox("Axis labels")
-        labels_form = QFormLayout(labels_group)
-        labels_form.setContentsMargins(4, 6, 4, 6)
+        form = self._section(layout, 'Fonts and ticks')
+        self._combo(form, 'font_family', 'Font', [(f, f) for f in _FONT_FAMILIES])
+        self._spin(form, 'base_font_size', 'Label size', 8, 72)
+        self._spin(form, 'tick_font_size', 'Tick size', 8, 48)
+        self._check(form, 'tick_label_bold', 'Bold tick labels')
+        self._check(form, 'tick_label_italic', 'Italic tick labels')
+        self._check(form, 'show_x_tick_labels', 'Show X numbers')
+        self._check(form, 'show_y_tick_labels', 'Show Y numbers')
+        self._check(form, 'show_x_tick_marks', 'Show X tick marks')
+        self._check(form, 'show_y_tick_marks', 'Show Y tick marks')
 
-        self._x_label = QLineEdit()
-        self._x_label.setPlaceholderText("e.g. Raman shift (cm^-1)")
-        labels_form.addRow("X label:", self._x_label)
+        form = self._section(layout, 'Lines and canvas')
+        self._spin(form, 'trace_line_width', 'Spectrum width', 1, 10)
+        self._spin(form, 'axis_line_width', 'Axis width', 1, 10)
+        self._color(form, 'axis_line_color', 'Axis color')
+        self._combo(form, 'frame_mode', 'Frame', [('Open', 'open'), ('Box', 'box')])
+        self._combo(form, 'plot_canvas', 'Canvas', [('Follow theme', 'auto'), ('White', 'white'), ('Dark', 'dark')])
+        self._check(form, 'show_grid', 'Show grid')
+        self._color(form, 'grid_color', 'Grid color')
+        self._spin(form, 'grid_width', 'Grid width', 1, 3)
+        self._combo(form, 'palette', 'Palette', _PALETTE_OPTIONS)
+        self._check(form, 'inline_spectrum_labels', 'Names beside spectra')
+        for key, label in [('spectrum_label_bold', 'Bold spectrum names'),
+                           ('spectrum_label_italic', 'Italic spectrum names')]:
+            if hasattr(self._state.graphics, key):
+                self._check(form, key, label)
 
-        self._y_label = QLineEdit()
-        self._y_label.setPlaceholderText("e.g. Intensity (a.u.)")
-        labels_form.addRow("Y label:", self._y_label)
+        form = self._section(layout, 'Peak labels')
+        self._check(form, 'show_markers', 'Show markers', 'peaks')
+        self._check(form, 'show_labels', 'Show labels', 'peaks')
+        self._check(form, 'show_leader_lines', 'Show leader lines', 'peaks')
+        self._spin(form, 'label_angle_deg', 'Angle (degrees)', -180, 180, 'peaks')
+        self._spin(form, 'label_font_size', 'Label size', 8, 72, 'peaks')
+        self._check(form, 'label_bold', 'Bold peak labels', 'peaks')
+        self._check(form, 'label_italic', 'Italic peak labels', 'peaks')
+        colors = [('Match spectrum', 'trace'), ('Custom color', 'custom')]
+        self._combo(form, 'label_color_mode', 'Label color', colors, 'peaks')
+        self._color(form, 'label_color', 'Custom label color', 'peaks')
+        self._combo(form, 'leader_color_mode', 'Leader color', colors, 'peaks')
+        self._color(form, 'leader_color', 'Custom leader color', 'peaks')
+        self._spin(form, 'leader_line_width', 'Leader width', 1, 6, 'peaks')
 
-        lbl_style = QHBoxLayout()
-        self._chk_axis_bold = QCheckBox("Bold")
-        self._chk_axis_italic = QCheckBox("Italic")
-        lbl_style.addWidget(self._chk_axis_bold)
-        lbl_style.addWidget(self._chk_axis_italic)
-        labels_form.addRow("Label style:", lbl_style)
+        form = self._section(layout, 'Export canvas')
+        self._spin(form, 'export_width', 'Width (px)', 300, 8000, step=100)
+        self._spin(form, 'export_height', 'Height (px)', 300, 8000, step=100)
+        if hasattr(self._state.graphics, 'preview_canvas_size'):
+            self._check(form, 'preview_canvas_size', 'Preview export dimensions')
 
-        layout.addWidget(labels_group)
+    @staticmethod
+    def _sync_controls(settings, controls):
+        for key, widget in controls.items():
+            value = getattr(settings, key)
+            widget.blockSignals(True)
+            try:
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(bool(value))
+                elif isinstance(widget, QSpinBox):
+                    widget.setValue(round(value))
+                elif isinstance(widget, QComboBox):
+                    index = widget.findData(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                elif isinstance(widget, QLineEdit):
+                    widget.setText(str(value))
+                elif isinstance(widget, QPushButton):
+                    color = QColor(str(value))
+                    widget.setText(str(value))
+                    text = '#111827' if color.lightness() >= 128 else '#ffffff'
+                    widget.setStyleSheet(f'background-color: {color.name()}; color: {text};')
+            finally:
+                widget.blockSignals(False)
 
-        # ── Font & sizes ──
-        font_group = QGroupBox("Font & sizes")
-        font_form = QFormLayout(font_group)
-        font_form.setContentsMargins(4, 6, 4, 6)
+    def _sync_graphics(self):
+        self._sync_controls(self._state.graphics, self._graphics_controls)
 
-        self._combo_font = QComboBox()
-        self._combo_font.addItems(_FONT_FAMILIES)
-        font_form.addRow("Font:", self._combo_font)
-
-        self._spin_base_font = QSpinBox()
-        self._spin_base_font.setRange(8, 48)
-        self._spin_base_font.setValue(32)
-        font_form.addRow("Base font size:", self._spin_base_font)
-
-        self._spin_tick_font = QSpinBox()
-        self._spin_tick_font.setRange(8, 36)
-        self._spin_tick_font.setValue(30)
-        font_form.addRow("Tick font size:", self._spin_tick_font)
-
-        tick_style = QHBoxLayout()
-        self._chk_tick_bold = QCheckBox("Bold")
-        self._chk_tick_italic = QCheckBox("Italic")
-        tick_style.addWidget(self._chk_tick_bold)
-        tick_style.addWidget(self._chk_tick_italic)
-        font_form.addRow("Tick style:", tick_style)
-
-        layout.addWidget(font_group)
-
-        # ── Lines & frame ──
-        lines_group = QGroupBox("Lines & frame")
-        lines_form = QFormLayout(lines_group)
-        lines_form.setContentsMargins(4, 6, 4, 6)
-
-        self._spin_trace_width = QSpinBox()
-        self._spin_trace_width.setRange(1, 10)
-        self._spin_trace_width.setValue(4)
-        lines_form.addRow("Trace width:", self._spin_trace_width)
-
-        self._spin_axis_width = QSpinBox()
-        self._spin_axis_width.setRange(1, 10)
-        self._spin_axis_width.setValue(4)
-        lines_form.addRow("Axis width:", self._spin_axis_width)
-
-        self._combo_frame = QComboBox()
-        self._combo_frame.addItems(["open", "box"])
-        lines_form.addRow("Frame:", self._combo_frame)
-
-        layout.addWidget(lines_group)
-
-        # ── Palette ──
-        self._combo_palette = QComboBox()
-        for label, value in _PALETTE_OPTIONS:
-            self._combo_palette.addItem(label, value)
-        layout.addWidget(QLabel("Palette:"))
-        layout.addWidget(self._combo_palette)
-
-        # ── Tick visibility ──
-        ticks_row = QHBoxLayout()
-        self._chk_show_x_ticks = QCheckBox("X tick labels")
-        self._chk_show_x_ticks.setChecked(True)
-        self._chk_show_y_ticks = QCheckBox("Y tick labels")
-        ticks_row.addWidget(self._chk_show_x_ticks)
-        ticks_row.addWidget(self._chk_show_y_ticks)
-        layout.addLayout(ticks_row)
-
-        # ── Grid settings ──
-        self._chk_grid = QCheckBox("Show grid")
-        layout.addWidget(self._chk_grid)
-
-        # ── Export canvas size ──
-        size_group = QGroupBox("Export canvas size")
-        size_form = QFormLayout(size_group)
-        size_form.setContentsMargins(4, 6, 4, 6)
-
-        self._spin_export_w = QSpinBox()
-        self._spin_export_w.setRange(300, 8000)
-        self._spin_export_w.setValue(1600)
-        self._spin_export_w.setSingleStep(100)
-        size_form.addRow("Width:", self._spin_export_w)
-
-        self._spin_export_h = QSpinBox()
-        self._spin_export_h.setRange(300, 8000)
-        self._spin_export_h.setValue(900)
-        self._spin_export_h.setSingleStep(100)
-        size_form.addRow("Height:", self._spin_export_h)
-
-        layout.addWidget(size_group)
-
-    def _connect_signals(self) -> None:
-        s = self._state
-
-        self._x_label.editingFinished.connect(
-            lambda: s.set_graphics(x_label=self._x_label.text())
-        )
-        self._y_label.editingFinished.connect(
-            lambda: s.set_graphics(y_label=self._y_label.text())
-        )
-        self._chk_axis_bold.toggled.connect(lambda c: s.set_graphics(axis_label_bold=c))
-        self._chk_axis_italic.toggled.connect(lambda c: s.set_graphics(axis_label_italic=c))
-
-        self._combo_font.currentTextChanged.connect(lambda t: s.set_graphics(font_family=t))
-        self._spin_base_font.valueChanged.connect(lambda v: s.set_graphics(base_font_size=v))
-        self._spin_tick_font.valueChanged.connect(lambda v: s.set_graphics(tick_font_size=v))
-        self._chk_tick_bold.toggled.connect(lambda c: s.set_graphics(tick_label_bold=c))
-        self._chk_tick_italic.toggled.connect(lambda c: s.set_graphics(tick_label_italic=c))
-
-        self._spin_trace_width.valueChanged.connect(lambda v: s.set_graphics(trace_line_width=v))
-        self._spin_axis_width.valueChanged.connect(lambda v: s.set_graphics(axis_line_width=v))
-        self._combo_frame.currentTextChanged.connect(lambda t: s.set_graphics(frame_mode=t))
-
-        self._combo_palette.currentIndexChanged.connect(self._on_palette_changed)
-
-        self._chk_show_x_ticks.toggled.connect(lambda c: s.set_graphics(show_x_tick_labels=c))
-        self._chk_show_y_ticks.toggled.connect(lambda c: s.set_graphics(show_y_tick_labels=c))
-        self._chk_grid.toggled.connect(lambda c: s.set_graphics(show_grid=c))
-
-        self._spin_export_w.valueChanged.connect(lambda v: s.set_graphics(export_width=v))
-        self._spin_export_h.valueChanged.connect(lambda v: s.set_graphics(export_height=v))
-
-        # Keep widget values in sync when state is changed externally (e.g. presets).
-        s.graphics_changed.connect(self._sync_from_state)
-
-    def _on_palette_changed(self, index: int) -> None:
-        value = self._combo_palette.itemData(index)
-        if value:
-            self._state.set_graphics(palette=value)
-
-    def _sync_from_state(self) -> None:
-        g = self._state.graphics
-        widgets = [
-            self._x_label,
-            self._y_label,
-            self._chk_axis_bold,
-            self._chk_axis_italic,
-            self._combo_font,
-            self._spin_base_font,
-            self._spin_tick_font,
-            self._chk_tick_bold,
-            self._chk_tick_italic,
-            self._spin_trace_width,
-            self._spin_axis_width,
-            self._combo_frame,
-            self._combo_palette,
-            self._chk_show_x_ticks,
-            self._chk_show_y_ticks,
-            self._chk_grid,
-            self._spin_export_w,
-            self._spin_export_h,
-        ]
-        for w in widgets:
-            w.blockSignals(True)
-        try:
-            self._x_label.setText(g.x_label)
-            self._y_label.setText(g.y_label)
-            self._chk_axis_bold.setChecked(g.axis_label_bold)
-            self._chk_axis_italic.setChecked(g.axis_label_italic)
-
-            idx = self._combo_font.findText(g.font_family)
-            if idx >= 0:
-                self._combo_font.setCurrentIndex(idx)
-            self._spin_base_font.setValue(g.base_font_size)
-            self._spin_tick_font.setValue(g.tick_font_size)
-            self._chk_tick_bold.setChecked(g.tick_label_bold)
-            self._chk_tick_italic.setChecked(g.tick_label_italic)
-
-            self._spin_trace_width.setValue(g.trace_line_width)
-            self._spin_axis_width.setValue(g.axis_line_width)
-            idx_frame = self._combo_frame.findText(g.frame_mode)
-            if idx_frame >= 0:
-                self._combo_frame.setCurrentIndex(idx_frame)
-
-            for i in range(self._combo_palette.count()):
-                if self._combo_palette.itemData(i) == g.palette:
-                    self._combo_palette.setCurrentIndex(i)
-                    break
-
-            self._chk_show_x_ticks.setChecked(g.show_x_tick_labels)
-            self._chk_show_y_ticks.setChecked(g.show_y_tick_labels)
-            self._chk_grid.setChecked(g.show_grid)
-
-            self._spin_export_w.setValue(g.export_width)
-            self._spin_export_h.setValue(g.export_height)
-        finally:
-            for w in widgets:
-                w.blockSignals(False)
+    def _sync_peaks(self):
+        self._sync_controls(self._state.peaks_settings, self._peak_controls)
+        ps = self._state.peaks_settings
+        self._peak_controls['label_color'].setEnabled(ps.label_color_mode == 'custom')
+        self._peak_controls['leader_color'].setEnabled(ps.leader_color_mode == 'custom')

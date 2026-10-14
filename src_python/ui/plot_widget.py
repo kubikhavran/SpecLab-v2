@@ -1,472 +1,454 @@
-"""
-Interactive spectrum plot using PyQtGraph.
-Replaces the Plotly-based PlotArea.tsx from the React app.
-
-Features:
-  - Renders one or many spectra (overlay / single mode)
-  - Color-codes traces via the palette system
-  - Highlights active spectrum with thicker line
-  - Supports stack offset for overlaid spectra
-  - Auto-range, invert X, grid toggle
-  - Crosshair + coordinate readout in status bar
-"""
+"""Interactive spectrum canvas with accurate styles, originals and local previews."""
 
 from __future__ import annotations
-
-from typing import Dict, List, Optional, Tuple
-
+import html
+import re
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPen
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
-
-from app.models import SPECTRAL_MODES
-from app.state import AppState
 from core.palettes import get_color_for_index, get_palette_colors
 
 
-class SpectrumPlotWidget(QWidget):
-    """Central plot area — displays spectrum traces via PyQtGraph."""
+def axis_html(text):
+    """Escape plain labels before rendering the documented ^/_ math shorthand."""
+    value = html.escape(text)
+    return re.sub(
+        r"([\^_])(?:\{([^}]+)\}|([A-Za-z0-9−+\-]+))",
+        lambda match: (
+            f"<{'sup' if match[1] == '^' else 'sub'}>{match[2] or match[3]}</{'sup' if match[1] == '^' else 'sub'}>"
+        ),
+        value,
+    )
 
-    # Emitted when the user clicks on the plot canvas (x_data, y_data)
+
+class _PeakLabel(pg.TextItem):
+    def __init__(
+        self, text, color, position, callback, delete_callback, leader=None, **kwargs
+    ):
+        super().__init__(text=text, color=color, **kwargs)
+        self.callback = callback
+        self.delete_callback = delete_callback
+        self.leader = leader
+        self.origin = position
+        self._start = None
+        self.setPos(*position)
+        self.setZValue(20)
+
+    def mouseDragEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            event.ignore()
+            return
+        event.accept()
+        if event.isStart():
+            self._start = self.pos()
+        delta = self.mapToParent(event.pos()) - self.mapToParent(event.buttonDownPos())
+        self.setPos(self._start + delta)
+        if self.leader is not None:
+            self.leader.setData(
+                [self.origin[0], self.pos().x()], [self.origin[1], self.pos().y()]
+            )
+        if event.isFinish():
+            self.callback(self.pos().x(), self.pos().y())
+
+    def mouseClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.delete_callback()
+        else:
+            event.ignore()
+
+
+class SpectrumPlotWidget(QWidget):
     plot_clicked = Signal(float, float)
 
-    def __init__(self, state: AppState, parent: QWidget | None = None) -> None:
+    def __init__(self, state, parent=None):
         super().__init__(parent)
         self._state = state
-
-        # ── Trace book-keeping ──────────────────────────
-        self._trace_items: List[pg.PlotDataItem] = []
-        self._baseline_item: Optional[pg.PlotDataItem] = None
-        self._peak_scatter: Optional[pg.ScatterPlotItem] = None
-        self._peak_labels: List[pg.TextItem] = []
-        self._peaks_panel: Optional["PeaksPanel"] = None  # set externally
-
-        self._build_ui()
-        self._connect_signals()
+        self._peaks_panel = None
+        self._items = []
+        self._trace_items = []
+        self._show_original = False
+        self._label_positions = {}
+        self._plotted = []
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        pg.setConfigOptions(antialias=True)
+        self._plot_widget = pg.PlotWidget(background="white")
+        self._plot_item = self._plot_widget.getPlotItem()
+        self._plot_item.hideButtons()
+        self._plot_widget.setMouseEnabled(x=True, y=True)
+        self._plot_item.getViewBox().setDefaultPadding(0.08)
+        self._plot_item.addLegend(
+            offset=(15, 10),
+            labelTextSize="10pt",
+            brush=pg.mkBrush(255, 255, 255, 210),
+            pen=pg.mkPen(None),
+        )
+        layout.addWidget(self._plot_widget, 1)
+        self._coord_label = QLabel("Importuj spektra nebo načti demonstrační data.")
+        self._coord_label.setObjectName("muted")
+        layout.addWidget(self._coord_label)
+        self._vline = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("#c4d5d3", style=Qt.PenStyle.DashLine)
+        )
+        self._hline = pg.InfiniteLine(
+            angle=0, movable=False, pen=pg.mkPen("#c4d5d3", style=Qt.PenStyle.DashLine)
+        )
+        for line in (self._vline, self._hline):
+            self._plot_widget.addItem(line, ignoreBounds=True)
+            line.hide()
+        self._proxy = pg.SignalProxy(
+            self._plot_widget.scene().sigMouseMoved, rateLimit=40, slot=self._mouse_move
+        )
+        self._plot_widget.scene().sigMouseClicked.connect(self._mouse_click)
+        for signal in [
+            state.spectra_changed,
+            state.active_spectrum_changed,
+            state.plot_changed,
+            state.graphics_changed,
+            state.baseline_changed,
+            state.smoothing_changed,
+            state.cosmic_changed,
+            state.peaks_changed,
+            state.spectral_mode_changed,
+            state.preview_changed,
+        ]:
+            signal.connect(self._redraw)
         self._redraw()
 
-    def set_peaks_panel(self, panel) -> None:
-        """Store a reference to the PeaksPanel for manual pick callbacks."""
+    def set_peaks_panel(self, panel):
         self._peaks_panel = panel
 
-    # ── UI construction ────────────────────────────────────
+    def set_show_original(self, value):
+        self._show_original = value
+        self._redraw()
 
-    def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 0)
-        layout.setSpacing(2)
+    def fit(self):
+        self._plot_item.getViewBox().enableAutoRange()
 
-        # PyQtGraph setup
-        pg.setConfigOptions(antialias=True, background="w", foreground="k")
+    def fit_y_visible(self):
+        low, high = self._plot_item.getViewBox().viewRange()[0]
+        values = []
+        for curve in self._trace_items:
+            x, y = curve.getData()
+            selected = (x >= low) & (x <= high)
+            if np.any(selected):
+                values.extend(y[selected].tolist())
+        if values:
+            pad = max(
+                float(np.ptp(values)) * 0.08,
+                max(abs(min(values)), abs(max(values)), 1) * 1e-6,
+            )
+            self._state.set_plot(y_min=min(values) - pad, y_max=max(values) + pad)
 
-        self._plot_widget = pg.PlotWidget()
-        self._plot_item = self._plot_widget.getPlotItem()
+    def reset_label_positions(self):
+        if self._state.spectra:
+            self._state.reset_peak_label_positions()
 
-        # Axis labels (will be updated from graphics settings later)
-        self._plot_item.setLabel("bottom", "X")
-        self._plot_item.setLabel("left", "Y")
+    def _add(self, item):
+        self._plot_widget.addItem(item)
+        self._items.append(item)
+        return item
 
-        # Enable built-in mouse interaction (zoom, pan)
-        self._plot_widget.setMouseEnabled(x=True, y=True)
-        self._plot_widget.enableAutoRange()
-
-        # Crosshair
-        self._vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#94a3b8", width=1, style=Qt.PenStyle.DashLine))
-        self._hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#94a3b8", width=1, style=Qt.PenStyle.DashLine))
-        self._plot_widget.addItem(self._vline, ignoreBounds=True)
-        self._plot_widget.addItem(self._hline, ignoreBounds=True)
-        self._vline.setVisible(False)
-        self._hline.setVisible(False)
-
-        # Mouse move proxy for crosshair
-        self._proxy = pg.SignalProxy(
-            self._plot_widget.scene().sigMouseMoved,
-            rateLimit=60,
-            slot=self._on_mouse_moved,
+    def _curve(self, x, y, color, width=2, style=Qt.PenStyle.SolidLine, name=None):
+        curve = self._plot_widget.plot(
+            x, y, pen=pg.mkPen(color=color, width=width, style=style), name=name
         )
+        curve.setDownsampling(auto=True, method="peak")
+        curve.setClipToView(True)
+        self._items.append(curve)
+        return curve
 
-        # Click detection
-        self._plot_widget.scene().sigMouseClicked.connect(self._on_mouse_clicked)
-
-        layout.addWidget(self._plot_widget, stretch=1)
-
-        # Coordinate readout label
-        self._coord_label = QLabel("")
-        self._coord_label.setStyleSheet("color: #64748b; font-size: 11px; padding: 2px 4px;")
-        layout.addWidget(self._coord_label)
-
-    # ── Signal wiring ──────────────────────────────────────
-
-    def _connect_signals(self) -> None:
-        self._state.spectra_changed.connect(self._redraw)
-        self._state.active_spectrum_changed.connect(self._redraw)
-        self._state.plot_changed.connect(self._redraw)
-        self._state.graphics_changed.connect(self._redraw)
-        # Redraw when processing results change
-        self._state.baseline_changed.connect(self._redraw)
-        self._state.smoothing_changed.connect(self._redraw)
-        self._state.cosmic_changed.connect(self._redraw)
-        self._state.peaks_changed.connect(self._redraw)
-        self._state.spectral_mode_changed.connect(self._redraw)
-
-    # ── Core drawing ───────────────────────────────────────
-
-    def _redraw(self) -> None:
-        """Clear all traces and redraw from current state."""
-        # Remove old traces
-        for item in self._trace_items:
+    def _redraw(self):
+        for item in self._items:
             self._plot_widget.removeItem(item)
+        self._items.clear()
         self._trace_items.clear()
-
-        if self._baseline_item is not None:
-            self._plot_widget.removeItem(self._baseline_item)
-            self._baseline_item = None
-
+        if self._plot_item.legend:
+            self._plot_item.legend.clear()
         state = self._state
-        spectra = state.spectra
-        if not spectra:
-            self._coord_label.setText("No spectra loaded")
-            return
-
-        plot = state.plot
         graphics = state.graphics
-        active_id = state.active_spectrum_id
-
-        overlay_mode = len(spectra) > 1 and plot.show_all_spectra
-
-        if overlay_mode:
-            plotted = list(reversed(spectra)) if plot.reverse_overlay_order else list(spectra)
-        else:
-            active = state.active_spectrum
-            plotted = [active] if active else [spectra[0]]
-
-        n_traces = len(plotted)
-        palette_colors = get_palette_colors(graphics.palette, n_traces)
-
-        for i, spec in enumerate(plotted):
-            if spec is None:
-                continue
-
-            # Resolve final Y through the processing chain
-            y_data = state.displayed_y(spec.id)
-            if y_data is None:
-                y_data = spec.y
-
-            x_arr = np.array(spec.x, dtype=np.float64)
-            y_arr = np.array(y_data, dtype=np.float64)
-
-            # Stack offset for overlay
-            if overlay_mode:
-                y_arr = y_arr + i * plot.stack_offset
-
-            # Determine pen
-            color_hex = get_color_for_index(palette_colors, i)
-            is_active = spec.id == active_id
-            base_w = max(1.0, graphics.trace_line_width / 2.0)
-
-            if is_active:
-                pen = pg.mkPen(color=color_hex, width=base_w + 1.0)
-            else:
-                # Slightly transparent for non-active traces
-                color = QColor(color_hex)
-                if overlay_mode:
-                    color.setAlpha(140)
-                pen = pg.mkPen(color=color, width=base_w)
-
-            curve = self._plot_widget.plot(
-                x_arr, y_arr,
-                pen=pen,
+        plot = state.plot
+        self._style()
+        if not state.spectra:
+            self._plotted = []
+            self._coord_label.setText("Importuj spektra nebo načti demonstrační data.")
+            return
+        self._plotted = (
+            list(reversed(state.spectra))
+            if plot.reverse_overlay_order
+            else list(state.spectra)
+        )
+        if not plot.show_all_spectra:
+            self._plotted = [state.active_spectrum or state.spectra[0]]
+        colors = get_palette_colors(graphics.palette, len(state.spectra))
+        preview = state.preview
+        all_kind = {s.meta.get("y_kind", "intensity") for s in self._plotted}
+        all_units = {s.meta.get("x_unit", s.meta.get("x_units")) for s in self._plotted}
+        for index, spec in enumerate(self._plotted):
+            color_index = next(
+                i for i, s in enumerate(state.spectra) if s.id == spec.id
+            )
+            color = get_color_for_index(colors, color_index)
+            x = np.asarray(spec.x)
+            y = np.asarray(state.displayed_y(spec.id))
+            offset = index * plot.stack_offset if plot.show_all_spectra else 0
+            width = max(1.0, graphics.trace_line_width / 2)
+            if self._show_original:
+                raw = state.original_data(spec.id)
+                if raw:
+                    self._curve(
+                        raw[0],
+                        np.asarray(raw[1]) + offset,
+                        "#a2b7b5",
+                        1.2,
+                        Qt.PenStyle.DashLine,
+                        "Původní data" if spec.id == state.active_spectrum_id else None,
+                    )
+            trace = self._curve(
+                x,
+                y + offset,
+                color,
+                width + (0.4 if spec.id == state.active_spectrum_id else 0),
                 name=spec.name,
             )
-            self._trace_items.append(curve)
-
-        # Baseline overlay (single mode only)
-        if not overlay_mode and plotted:
-            spec = plotted[0]
-            if spec and state.baseline.show_overlay and spec.id in state.baseline_y:
-                bl_y = np.array(state.baseline_y[spec.id], dtype=np.float64)
-                bl_x = np.array(spec.x[:len(bl_y)], dtype=np.float64)
-                bl_pen = pg.mkPen(color="#94a3b8", width=1.5, style=Qt.PenStyle.DashLine)
-                self._baseline_item = self._plot_widget.plot(
-                    bl_x, bl_y, pen=bl_pen, name="baseline"
+            self._trace_items.append(trace)
+            if graphics.inline_spectrum_labels:
+                inline = pg.TextItem(spec.name, color=color, anchor=(1, 1))
+                inline.setFont(QFont(graphics.font_family, 9))
+                inline.setPos(float(x[-1]), float(y[-1] + offset))
+                self._add(inline)
+            if (
+                spec.id == state.active_spectrum_id
+                and state.baseline.show_overlay
+                and spec.id in state.baseline_y
+            ):
+                baseline = state.baseline_y[spec.id]
+                if len(baseline) == len(x):
+                    self._curve(
+                        x,
+                        np.asarray(baseline) + offset,
+                        "#9da9b4",
+                        1,
+                        Qt.PenStyle.DashLine,
+                        "Odhad baseline",
+                    )
+            if preview and spec.id in preview.get("results", {}):
+                result = preview["results"][spec.id]
+                self._curve(
+                    result["x"],
+                    np.asarray(result["y"]) + offset,
+                    "#14877b",
+                    2.3,
+                    Qt.PenStyle.DotLine,
+                    "Náhled úpravy" if spec.id == state.active_spectrum_id else None,
                 )
+            if state.peaks_settings.enabled and (
+                state.peaks_settings.mode == "all"
+                or spec.id == state.active_spectrum_id
+            ):
+                self._draw_peaks(spec, x, y + offset, color)
+        note = f"{len(self._plotted)} křivek · {sum(len(s.x) for s in self._plotted):,} bodů"
+        if len(all_kind) > 1 or len(all_units) > 1:
+            note += " · Porovnáváš různé jednotky / typy Y"
+        if preview:
+            note += " · Tečkovaná křivka: dosud nepoužitý náhled"
+        if self._show_original:
+            spec = state.active_spectrum
+            if spec and state.processing_recipe(spec.id):
+                note += " · Původní data mají původní měřítko a jednotky"
+        self._coord_label.setText(note)
 
-        # ── Peak markers & labels ──────────────────────────
-        # Clean up old peak items
-        if self._peak_scatter is not None:
-            self._plot_widget.removeItem(self._peak_scatter)
-            self._peak_scatter = None
-        for lbl in self._peak_labels:
-            self._plot_widget.removeItem(lbl)
-        self._peak_labels.clear()
-
-        ps = state.peaks_settings
-        if ps.enabled:
-            peak_x_all = []
-            peak_y_all = []
-            label_items = []
-
-            # Determine which spectra to show peaks for
-            if ps.mode == "active":
-                peak_specs = [state.active_spectrum] if state.active_spectrum else []
-            else:
-                peak_specs = list(plotted)
-
-            for spec in peak_specs:
-                if spec is None:
-                    continue
-                auto_peaks = state.peaks_auto.get(spec.id, [])
-                manual_peaks = state.peaks_manual.get(spec.id, [])
-                all_peaks = auto_peaks + manual_peaks
-
-                y_disp = state.displayed_y(spec.id)
-                if y_disp is None:
-                    y_disp = spec.y
-
-                for peak in all_peaks:
-                    px = peak.x
-                    # Find nearest Y value in displayed data
-                    if spec.x and y_disp:
-                        xa_arr = np.array(spec.x)
-                        idx = int(np.argmin(np.abs(xa_arr - px)))
-                        py = y_disp[idx] if idx < len(y_disp) else 0.0
-                    else:
-                        py = 0.0
-
-                    # Apply stack offset if in overlay mode
-                    if overlay_mode:
-                        spec_idx = next((j for j, s in enumerate(plotted) if s and s.id == spec.id), 0)
-                        py += spec_idx * plot.stack_offset
-
-                    if ps.show_markers:
-                        peak_x_all.append(px)
-                        peak_y_all.append(py)
-
-                    if ps.show_labels:
-                        decimals = ps.decimals
-                        mode_defaults = SPECTRAL_MODES.get(state.spectral_mode)
-                        use_imported = (
-                            mode_defaults.peak_label_use_imported
-                            if mode_defaults
-                            else True
-                        )
-                        if peak.label and use_imported:
-                            label_text = peak.label.strip()
-                        else:
-                            label_text = f"{px:.{decimals}f}"
-                        txt = pg.TextItem(
-                            text=label_text,
-                            color="#ef4444",
-                            anchor=(0.5, 1.0),
-                            angle=0,
-                        )
-                        txt.setFont(pg.QtGui.QFont("Arial", 8))
-                        txt.setPos(px, py)
-                        self._plot_widget.addItem(txt)
-                        label_items.append(txt)
-
-            if peak_x_all:
-                scatter = pg.ScatterPlotItem(
-                    x=peak_x_all, y=peak_y_all,
+    def _draw_peaks(self, spec, x, y, color):
+        settings = self._state.peaks_settings
+        positions = []
+        for peak in self._state.peaks_auto.get(
+            spec.id, []
+        ) + self._state.peaks_manual.get(spec.id, []):
+            if not min(x[0], x[-1]) <= peak.x <= max(x[0], x[-1]):
+                continue
+            px = float(peak.x)
+            py = float(
+                np.interp(px, x, y) if x[-1] > x[0] else np.interp(px, x[::-1], y[::-1])
+            )
+            positions.append((px, py))
+            if not settings.show_labels:
+                continue
+            text = peak.label or f"{px:.{settings.decimals}f}"
+            span = max(float(np.ptp(y)), 1e-6)
+            label_pos = spec.meta.get("peak_label_positions", {}).get(
+                peak.id, (px, py + span * 0.07)
+            )
+            leader = None
+            if settings.show_leader_lines:
+                leader_color = (
+                    color
+                    if settings.leader_color_mode == "trace"
+                    else settings.leader_color
+                )
+                leader = self._curve(
+                    [px, label_pos[0]],
+                    [py, label_pos[1]],
+                    leader_color,
+                    settings.leader_line_width,
+                )
+            text_color = (
+                color if settings.label_color_mode == "trace" else settings.label_color
+            )
+            item = _PeakLabel(
+                text,
+                text_color,
+                (px, py),
+                lambda lx, ly, sid=spec.id, pid=peak.id: (
+                    self._state.set_peak_label_position(sid, pid, lx, ly)
+                ),
+                lambda sid=spec.id, pid=peak.id: self._state.remove_peak(sid, pid),
+                leader=leader,
+                anchor=(0.5, 1),
+                angle=settings.label_angle_deg,
+            )
+            item.setPos(*label_pos)
+            font = QFont(
+                self._state.graphics.font_family,
+                max(7, round(settings.label_font_size / 2)),
+            )
+            font.setBold(settings.label_bold)
+            font.setItalic(settings.label_italic)
+            item.setFont(font)
+            self._add(item)
+        if settings.show_markers and positions:
+            self._add(
+                pg.ScatterPlotItem(
+                    x=[p[0] for p in positions],
+                    y=[p[1] for p in positions],
                     pen=pg.mkPen(None),
-                    brush=pg.mkBrush("#ef4444"),
-                    size=7,
-                    symbol="o",
+                    brush=pg.mkBrush(color),
+                    size=6,
                 )
-                self._plot_widget.addItem(scatter)
-                self._peak_scatter = scatter
+            )
 
-            self._peak_labels = label_items
-
-        # Apply settings
-        self._apply_plot_settings()
-        self._apply_graphics_settings()
-
-        # Update status
-        total_pts = sum(len(s.x) for s in plotted if s)
-        self._coord_label.setText(
-            f"Traces: {n_traces} | Points: {total_pts:,}"
-        )
-
-    # ── Settings application ───────────────────────────────
-
-    def _apply_plot_settings(self) -> None:
-        plot = self._state.plot
-        pi = self._plot_item
-
-        # Grid
-        pi.showGrid(x=plot.show_grid, y=plot.show_grid, alpha=0.3)
-
-        # X-axis inversion
-        pi.getViewBox().invertX(plot.invert_x)
-
-        # Manual axis limits
-        if plot.x_min is not None and plot.x_max is not None:
-            self._plot_widget.setXRange(plot.x_min, plot.x_max, padding=0)
-        if plot.y_min is not None and plot.y_max is not None:
-            self._plot_widget.setYRange(plot.y_min, plot.y_max, padding=0)
-
-    def _apply_graphics_settings(self) -> None:
+    def _style(self):
         g = self._state.graphics
+        p = self._state.plot
         pi = self._plot_item
-
-        # Axis labels
-        label_style = {"font-size": f"{max(10, g.base_font_size // 3)}pt"}
+        dark = g.plot_canvas == "dark"
+        self._plot_widget.setBackground("#162629" if dark else "white")
+        axis_color = (
+            "#b5c7c7" if dark and g.axis_line_color == "#000000" else g.axis_line_color
+        )
+        font = QFont(g.font_family, max(8, round(g.tick_font_size / 2.5)))
+        font.setBold(g.tick_label_bold)
+        font.setItalic(g.tick_label_italic)
+        style = {
+            "color": "#b5c7c7" if dark else "#61777d",
+            "font-size": f"{max(10, round(g.base_font_size / 2.5))}pt",
+        }
         if g.axis_label_bold:
-            label_style["font-weight"] = "bold"
+            style["font-weight"] = "bold"
         if g.axis_label_italic:
-            label_style["font-style"] = "italic"
-
-        pi.setLabel("bottom", g.x_label, **label_style)
-        pi.setLabel("left", g.y_label, **label_style)
-
-        # Tick font
-        tick_font = QFont(g.font_family, max(8, g.tick_font_size // 3))
-        tick_font.setBold(g.tick_label_bold)
-        tick_font.setItalic(g.tick_label_italic)
-        for axis_name in ("bottom", "left"):
-            axis = pi.getAxis(axis_name)
-            axis.setTickFont(tick_font)
-            axis.setStyle(showValues=True)
-
-        # Axis line width & color
-        for axis_name in ("bottom", "left", "top", "right"):
-            axis = pi.getAxis(axis_name)
-            pen = pg.mkPen(color=g.axis_line_color, width=max(1, g.axis_line_width // 2))
-            axis.setPen(pen)
-
-        # Show/hide tick labels
-        pi.getAxis("bottom").setStyle(
-            showValues=g.show_x_tick_labels
+            style["font-style"] = "italic"
+        pi.setLabel("bottom", axis_html(g.x_label), **style)
+        y_label = g.y_label
+        active = self._state.active_spectrum
+        default_y_labels = {
+            "Y",
+            "Intenzita (a.u.)",
+            "Absorbance",
+            "Transmitance (%)",
+            "Transmitance (0–1)",
+            "Intensity (a.u.)",
+            "Transmittance (%)",
+        }
+        if active and y_label in default_y_labels:
+            kinds = {
+                "intensity": "Intenzita (a.u.)",
+                "absorbance": "Absorbance",
+                "transmittance_percent": "Transmitance (%)",
+                "transmittance_fraction": "Transmitance (0–1)",
+            }
+            y_label = kinds.get(active.meta.get("y_kind"), y_label)
+            if active.meta.get("ordinate_processing", "").startswith("derivative"):
+                y_label = f"Derivace ({active.meta.get('y_unit', 'a.u.')})"
+            elif active.meta.get("ordinate_processing", "").startswith("normalize"):
+                y_label = "Normalizovaná intenzita (a.u.)"
+        pi.setLabel("left", axis_html(y_label), **style)
+        for name in ("bottom", "left", "top", "right"):
+            axis = pi.getAxis(name)
+            axis.setTickFont(font)
+            axis.setPen(pg.mkPen(axis_color, width=max(1, g.axis_line_width / 2)))
+            axis.setTextPen(pg.mkPen("#b5c7c7" if dark else "#61777d"))
+        for name, marks, values in [
+            ("bottom", g.show_x_tick_marks, g.show_x_tick_labels),
+            ("left", g.show_y_tick_marks, g.show_y_tick_labels),
+        ]:
+            axis = pi.getAxis(name)
+            axis.setStyle(showValues=values, tickLength=-5 if marks else 0)
+            axis.setTickPen(
+                pg.mkPen(g.grid_color, width=g.grid_width)
+                if p.show_grid or g.show_grid
+                else pg.mkPen(axis_color, width=1)
+            )
+        pi.showAxis("top", g.frame_mode == "box")
+        pi.showAxis("right", g.frame_mode == "box")
+        pi.getAxis("top").setStyle(showValues=False)
+        pi.getAxis("right").setStyle(showValues=False)
+        pi.showGrid(
+            x=p.show_grid or g.show_grid, y=p.show_grid or g.show_grid, alpha=0.15
         )
-        pi.getAxis("left").setStyle(
-            showValues=g.show_y_tick_labels
-        )
+        pi.getViewBox().invertX(p.invert_x)
+        if p.x_min is not None and p.x_max is not None:
+            self._plot_widget.setXRange(p.x_min, p.x_max, padding=0)
+        if p.y_min is not None and p.y_max is not None:
+            self._plot_widget.setYRange(p.y_min, p.y_max, padding=0)
 
-        # Frame mode (box = show top+right axes, open = hide them)
-        pi.showAxis("top", show=(g.frame_mode == "box"))
-        pi.showAxis("right", show=(g.frame_mode == "box"))
-        if g.frame_mode == "box":
-            for axis_name in ("top", "right"):
-                axis = pi.getAxis(axis_name)
-                axis.setStyle(showValues=False)
-                pen = pg.mkPen(color=g.axis_line_color, width=max(1, g.axis_line_width // 2))
-                axis.setPen(pen)
-
-    # ── Crosshair / mouse ──────────────────────────────────
-
-    def _on_mouse_moved(self, evt) -> None:
-        pos = evt[0]
-        if self._plot_widget.sceneBoundingRect().contains(pos):
-            mouse_point = self._plot_item.getViewBox().mapSceneToView(pos)
-            x_val = mouse_point.x()
-            y_val = mouse_point.y()
-            self._vline.setPos(x_val)
-            self._hline.setPos(y_val)
-            self._vline.setVisible(True)
-            self._hline.setVisible(True)
-            self._coord_label.setText(f"x = {x_val:.2f}   y = {y_val:.2f}")
+    def _mouse_move(self, event):
+        pos = event[0]
+        view = self._plot_item.getViewBox()
+        if view.sceneBoundingRect().contains(pos):
+            point = view.mapSceneToView(pos)
+            self._vline.setPos(point.x())
+            self._hline.setPos(point.y())
+            self._vline.show()
+            self._hline.show()
+            self._coord_label.setText(f"X = {point.x():.6g}    Y = {point.y():.6g}")
         else:
-            self._vline.setVisible(False)
-            self._hline.setVisible(False)
+            self._vline.hide()
+            self._hline.hide()
 
-    def _on_mouse_clicked(self, evt) -> None:
-        """
-        Handle mouse clicks on the plot:
-          - Left click:        select the nearest spectrum as active
-          - Ctrl + Left click: add manual peak label (if manual pick enabled)
-          - Shift + Left click: remove nearest peak label (if manual pick enabled)
-        """
-        if evt.button() != Qt.MouseButton.LeftButton:
+    def _mouse_click(self, event):
+        if event.isAccepted() or event.button() != Qt.MouseButton.LeftButton:
             return
-        pos = evt.scenePos()
-        if not self._plot_widget.sceneBoundingRect().contains(pos):
+        view = self._plot_item.getViewBox()
+        if not view.sceneBoundingRect().contains(event.scenePos()):
             return
-
-        mouse_point = self._plot_item.getViewBox().mapSceneToView(pos)
-        x_val = mouse_point.x()
-        y_val = mouse_point.y()
-
-        self.plot_clicked.emit(x_val, y_val)
-
-        modifiers = evt.modifiers()
-
-        # ── Ctrl+click: add manual peak ──
-        if modifiers & Qt.KeyboardModifier.ControlModifier:
-            if (
-                self._peaks_panel is not None
-                and self._state.peaks_settings.manual_pick_enabled
+        point = view.mapSceneToView(event.scenePos())
+        self.plot_clicked.emit(point.x(), point.y())
+        modifiers = event.modifiers()
+        settings = self._state.peaks_settings
+        if self._peaks_panel and settings.manual_pick_enabled:
+            if modifiers & (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
             ):
-                self._peaks_panel.add_manual_peak(x_val)
-            return
-
-        # ── Shift+click: remove nearest peak ──
-        if modifiers & Qt.KeyboardModifier.ShiftModifier:
-            if (
-                self._peaks_panel is not None
-                and self._state.peaks_settings.manual_pick_enabled
-            ):
-                self._peaks_panel.remove_nearest_peak(x_val)
-            return
-
-        # ── Plain click: select nearest spectrum ──
-        self._select_nearest_spectrum(x_val, y_val)
-
-    def _select_nearest_spectrum(self, x_click: float, y_click: float) -> None:
-        """
-        Find the spectrum trace nearest to the click point and make it active.
-
-        For each plotted spectrum, find the Y value at x_click, compute the
-        vertical distance to y_click (accounting for stack offset), and pick
-        the closest one.
-        """
-        state = self._state
-        spectra = state.spectra
-        if not spectra:
-            return
-
-        plot = state.plot
-        overlay_mode = len(spectra) > 1 and plot.show_all_spectra
-
-        if not overlay_mode:
-            # In single-spectrum mode, clicking doesn't change selection
-            return
-
-        # Determine plotted spectra (same order as in _redraw)
-        if plot.reverse_overlay_order:
-            plotted = list(reversed(spectra))
-        else:
-            plotted = list(spectra)
-
-        best_dist = float("inf")
-        best_id = None
-
-        for i, spec in enumerate(plotted):
-            if spec is None:
-                continue
-
-            y_disp = state.displayed_y(spec.id)
-            if y_disp is None:
-                y_disp = spec.y
-            if not spec.x or not y_disp:
-                continue
-
-            # Find nearest X index
-            x_arr = np.array(spec.x, dtype=np.float64)
-            idx = int(np.argmin(np.abs(x_arr - x_click)))
-            if idx >= len(y_disp):
-                continue
-
-            y_at_click = float(y_disp[idx])
-            # Apply stack offset
-            y_at_click += i * plot.stack_offset
-
-            dist = abs(y_at_click - y_click)
-            if dist < best_dist:
-                best_dist = dist
-                best_id = spec.id
-
-        if best_id is not None and best_id != state.active_spectrum_id:
-            state.set_active_spectrum(best_id)
+                self._peaks_panel.add_manual_peak(point.x())
+                return
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self._peaks_panel.remove_nearest_peak(point.x())
+                return
+        if self._state.plot.show_all_spectra:
+            candidates = []
+            for index, spec in enumerate(self._plotted):
+                if (
+                    min(spec.x[0], spec.x[-1])
+                    <= point.x()
+                    <= max(spec.x[0], spec.x[-1])
+                ):
+                    y = (
+                        np.interp(point.x(), spec.x, self._state.displayed_y(spec.id))
+                        + index * self._state.plot.stack_offset
+                    )
+                    candidates.append((abs(y - point.y()), spec.id))
+            if candidates:
+                self._state.set_active_spectrum(min(candidates)[1])

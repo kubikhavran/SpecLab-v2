@@ -11,16 +11,16 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSpinBox,
+    QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from app.models import Peak, _new_id
 from app.state import AppState
-from core.peak_detection import detect_peaks, detected_to_peaks
 
 
 class PeaksPanel(QWidget):
@@ -66,21 +66,47 @@ class PeaksPanel(QWidget):
         # Min prominence
         prom_row = QHBoxLayout()
         prom_row.addWidget(QLabel("Min prominence:"))
-        self._prom_spin = QSpinBox()
-        self._prom_spin.setRange(0, 100000)
+        self._prom_spin = QDoubleSpinBox()
+        self._prom_spin.setDecimals(8)
+        self._prom_spin.setRange(0, 1e12)
         self._prom_spin.setValue(20)
-        self._prom_spin.setSingleStep(10)
+        self._prom_spin.setSingleStep(0.01)
         prom_row.addWidget(self._prom_spin)
         layout.addLayout(prom_row)
+
+        self._chk_mixed = QCheckBox('Automatic settings for mixed Y types')
+        self._chk_mixed.setToolTip(
+            'For a mixed batch, use absorbance prominence 0.01, fractional transmittance 0.05, '
+            'percent transmittance 5, and intensity 20 with matching polarity. '
+            'Disable to use your prominence and polarity for every spectrum. Both stays both.'
+        )
+        layout.addWidget(self._chk_mixed)
 
         # Min distance (X units)
         dist_row = QHBoxLayout()
         dist_row.addWidget(QLabel("Min distance:"))
-        self._dist_spin = QSpinBox()
-        self._dist_spin.setRange(0, 200)
+        self._dist_spin = QDoubleSpinBox()
+        self._dist_spin.setDecimals(6)
+        self._dist_spin.setRange(0, 1e12)
         self._dist_spin.setValue(10)
         dist_row.addWidget(self._dist_spin)
         layout.addLayout(dist_row)
+
+        self._chk_region = QCheckBox('Limit detection to X range')
+        self._chk_region.setToolTip('Enable to seed the range from current plot bounds, then edit the limits.')
+        layout.addWidget(self._chk_region)
+        region_row = QHBoxLayout()
+        region_row.addWidget(QLabel('X min:'))
+        self._region_min = QDoubleSpinBox()
+        self._region_min.setDecimals(6)
+        self._region_min.setRange(-1e12, 1e12)
+        region_row.addWidget(self._region_min)
+        region_row.addWidget(QLabel('X max:'))
+        self._region_max = QDoubleSpinBox()
+        self._region_max.setDecimals(6)
+        self._region_max.setRange(-1e12, 1e12)
+        region_row.addWidget(self._region_max)
+        layout.addLayout(region_row)
 
         # Max peaks
         mp_row = QHBoxLayout()
@@ -128,6 +154,11 @@ class PeaksPanel(QWidget):
 
         btn2 = QHBoxLayout()
         self._btn_detect_all = QPushButton("Detect ALL")
+        self._btn_detect_all.setToolTip(
+            'Mixed ordinate types use per-spectrum defaults: absorbance maxima / 0.01, '
+            'fractional transmittance minima / 0.05, percent transmittance minima / 5, '
+            'intensity maxima / 20. Both polarity remains both. Homogeneous scope uses your settings.'
+        )
         self._btn_clear_all = QPushButton("Clear ALL")
         btn2.addWidget(self._btn_detect_all)
         btn2.addWidget(self._btn_clear_all)
@@ -145,7 +176,11 @@ class PeaksPanel(QWidget):
             lambda t: self._state.set_peaks(polarity=t)
         )
         self._prom_spin.valueChanged.connect(lambda v: self._state.set_peaks(min_prominence=v))
+        self._chk_mixed.toggled.connect(lambda checked: self._state.set_peaks(mixed_defaults=checked))
         self._dist_spin.valueChanged.connect(lambda v: self._state.set_peaks(min_distance=v))
+        self._chk_region.toggled.connect(self._on_region_toggled)
+        self._region_min.editingFinished.connect(self._on_region_limits)
+        self._region_max.editingFinished.connect(self._on_region_limits)
         self._mp_spin.valueChanged.connect(lambda v: self._state.set_peaks(max_peaks=v))
         self._dec_spin.valueChanged.connect(lambda v: self._state.set_peaks(decimals=v))
         self._chk_markers.toggled.connect(lambda c: self._state.set_peaks(show_markers=c))
@@ -161,6 +196,7 @@ class PeaksPanel(QWidget):
 
         # Keep controls synced after external state updates (e.g. presets).
         self._state.peaks_changed.connect(self._sync_from_state)
+        self._state.active_spectrum_changed.connect(self._sync_from_state)
 
     def _sync_from_state(self) -> None:
         p = self._state.peaks_settings
@@ -169,7 +205,9 @@ class PeaksPanel(QWidget):
             self._combo_mode,
             self._combo_polarity,
             self._prom_spin,
+            self._chk_mixed,
             self._dist_spin,
+            self._chk_region, self._region_min, self._region_max,
             self._mp_spin,
             self._dec_spin,
             self._chk_markers,
@@ -182,8 +220,15 @@ class PeaksPanel(QWidget):
             self._chk_enabled.setChecked(p.enabled)
             self._combo_mode.setCurrentText(p.mode)
             self._combo_polarity.setCurrentText(p.polarity)
-            self._prom_spin.setValue(int(p.min_prominence))
+            self._prom_spin.setValue(p.min_prominence)
+            self._chk_mixed.setChecked(p.mixed_defaults)
             self._dist_spin.setValue(p.min_distance)
+            lower, upper = self._region_defaults()
+            self._chk_region.setChecked(p.region_enabled)
+            self._region_min.setValue(p.x_min if p.x_min is not None else lower)
+            self._region_max.setValue(p.x_max if p.x_max is not None else upper)
+            self._region_min.setEnabled(p.region_enabled)
+            self._region_max.setEnabled(p.region_enabled)
             self._mp_spin.setValue(p.max_peaks)
             self._dec_spin.setValue(p.decimals)
             self._chk_markers.setChecked(p.show_markers)
@@ -193,73 +238,65 @@ class PeaksPanel(QWidget):
             for w in widgets:
                 w.blockSignals(False)
 
-    def _get_display_y(self, spec) -> list:
-        """Get the displayed Y for peak detection (follows processing chain)."""
-        y = self._state.displayed_y(spec.id)
-        return y if y is not None else spec.y
+    def _region_defaults(self) -> tuple[float, float]:
+        spec = self._state.active_spectrum
+        lower, upper = (min(spec.x), max(spec.x)) if spec is not None else (0.0, 1.0)
+        plot = self._state.plot
+        lower = plot.x_min if plot.x_min is not None else lower
+        upper = plot.x_max if plot.x_max is not None else upper
+        return float(min(lower, upper)), float(max(lower, upper))
 
-    def _detect_for(self, spec) -> int:
-        """Run peak detection for one spectrum. Returns peak count."""
-        p = self._state.peaks_settings
-        y = self._get_display_y(spec)
-        detected = detect_peaks(
-            spec.x, y,
-            min_prominence=p.min_prominence,
-            min_distance_x=p.min_distance,
-            max_peaks=p.max_peaks,
-            polarity=p.polarity if hasattr(p, 'polarity') else "max",
-        )
-        peaks = detected_to_peaks(detected)
-        self._state.peaks_auto[spec.id] = peaks
-        return len(peaks)
+    def _on_region_toggled(self, checked: bool) -> None:
+        if checked:
+            lower, upper = self._region_defaults()
+            self._state.set_peaks(region_enabled=True, x_min=lower, x_max=upper)
+        else:
+            self._state.set_peaks(region_enabled=False)
+
+    def _on_region_limits(self) -> None:
+        lower, upper = self._region_min.value(), self._region_max.value()
+        if lower >= upper:
+            self._info.setText('X minimum must be smaller than maximum.')
+            return
+        self._state.set_peaks(x_min=lower, x_max=upper)
+
+    def _detect(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        try:
+            count = self._state.detect_spectrum_peaks(ids)
+            kinds = {spec.meta.get('y_kind', 'intensity') for spec in self._state.spectra if spec.id in ids}
+            suffix = (' · mixed Y types: per-spectrum defaults' if len(kinds) > 1
+                      and self._state.peaks_settings.mixed_defaults else '')
+            self._info.setText(f"Detected: {count} peaks{suffix}")
+        except ValueError as error:
+            QMessageBox.warning(self, "Peak detection could not run", str(error))
 
     def _on_detect(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        count = self._detect_for(spec)
-        self._state.set_peaks(enabled=True)
-        self._chk_enabled.setChecked(True)
-        self._info.setText(f"Detected: {count} peaks")
-        self._state.peaks_changed.emit()
+        if spec is not None:
+            self._detect([spec.id])
 
     def _on_clear(self) -> None:
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        self._state.peaks_auto.pop(spec.id, None)
-        self._state.peaks_manual.pop(spec.id, None)
-        self._info.setText("")
-        self._state.peaks_changed.emit()
+        if spec is not None:
+            self._state.clear_peaks([spec.id])
+            self._info.setText("")
 
     def _on_detect_all(self) -> None:
-        total = 0
-        for spec in self._state.spectra:
-            total += self._detect_for(spec)
-        self._state.set_peaks(enabled=True)
-        self._chk_enabled.setChecked(True)
-        self._info.setText(f"Detected total: {total} peaks")
-        self._state.peaks_changed.emit()
+        self._detect([spec.id for spec in self._state.spectra])
 
     def _on_clear_all(self) -> None:
-        self._state.peaks_auto.clear()
-        self._state.peaks_manual.clear()
-        self._info.setText("")
-        self._state.peaks_changed.emit()
+        ids = [spec.id for spec in self._state.spectra]
+        if ids:
+            self._state.clear_peaks(ids)
+            self._info.setText("")
 
     def add_manual_peak(self, x: float) -> None:
-        """Add a manual peak at the given X coordinate on the active spectrum."""
         spec = self._state.active_spectrum
-        if spec is None:
-            return
-        peak = Peak(id=_new_id(), x=x, source="manual")
-        manual = self._state.peaks_manual.get(spec.id, [])
-        manual.append(peak)
-        self._state.peaks_manual[spec.id] = manual
-        self._state.set_peaks(enabled=True)
-        self._chk_enabled.setChecked(True)
-        self._info.setText(f"Manual peak added at x={x:.1f}")
-        self._state.peaks_changed.emit()
+        if spec is not None:
+            self._state.add_manual_peak(spec.id, x)
+            self._info.setText(f"Manual peak added at x={x:.1f}")
 
     def remove_nearest_peak(self, x: float) -> None:
         """Remove the peak nearest to X on the active spectrum (Shift+click)."""
@@ -284,14 +321,6 @@ class PeaksPanel(QWidget):
         if best_id is None:
             return
 
-        if best_source == "auto":
-            self._state.peaks_auto[spec.id] = [
-                p for p in self._state.peaks_auto.get(spec.id, []) if p.id != best_id
-            ]
-        else:
-            self._state.peaks_manual[spec.id] = [
-                p for p in self._state.peaks_manual.get(spec.id, []) if p.id != best_id
-            ]
+        self._state.remove_peak(spec.id, best_id)
 
         self._info.setText(f"Peak removed near x={x:.1f}")
-        self._state.peaks_changed.emit()

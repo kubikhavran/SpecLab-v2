@@ -66,7 +66,7 @@ class PresetsPanel(QWidget):
 
         row2 = QHBoxLayout()
         self._btn_apply = QPushButton("Apply")
-        self._btn_apply.setToolTip("Apply the selected preset's settings")
+        self._btn_apply.setToolTip("Apply settings and replay the saved active-spectrum recipe from original data; undo is available")
         self._btn_apply.setEnabled(False)
         row2.addWidget(self._btn_apply)
 
@@ -157,7 +157,11 @@ class PresetsPanel(QWidget):
         preset = self._selected_preset()
         if preset is None:
             return
-        apply_preset_payload(self._state, preset.payload)
+        try:
+            apply_preset_payload(self._state, preset.payload)
+        except (ValueError, ArithmeticError) as error:
+            self._info.setText(f"Preset could not be applied: {error}")
+            return
         self._info.setText(f"Applied: {preset.name}")
 
     def _on_rename(self) -> None:
@@ -229,4 +233,3 @@ class PresetsPanel(QWidget):
             self._info.setText(f"Imported {len(imported)} presets")
         except (json.JSONDecodeError, OSError) as e:
             self._info.setText(f"Error: {e}")
-
