@@ -41,7 +41,12 @@ def spectrum_names(
     ordered = list(reversed(spectra)) if reverse else list(spectra)
     result = {}
     for index, spec in enumerate(ordered):
-        stem = Path(spec.meta.get("sourceName") or spec.name).stem
+        # Spectra from multi-spectrum files (SPG groups, WiRE series) carry their
+        # own name; the shared file name would give every one the same label.
+        if spec.meta.get("sourceCount", 1) > 1:
+            stem = spec.name
+        else:
+            stem = Path(spec.meta.get("sourceName") or spec.name).stem
         if method == "sequence":
             token = f"{start + index * step:g}"
         elif method == "filename":
@@ -66,8 +71,10 @@ def spectrum_names(
                 match = re.search(NUMBER, token)
                 token = match[0] if match else ""
         elif method == "mv":
-            match = re.search(f"({NUMBER})\\s*mV", stem, re.IGNORECASE)
-            token = match[1] if match else ""
+            # The potential is the last "<number> mV" (e.g. "..._50mV_-200mv",
+            # where 50 mV is the step and -200 mV the electrode potential).
+            matches = re.findall(f"({NUMBER})\\s*mV", stem, re.IGNORECASE)
+            token = matches[-1] if matches else ""
         elif method in {"first", "last"}:
             matches = re.findall(NUMBER, stem)
             token = matches[0 if method == "first" else -1] if matches else ""

@@ -140,9 +140,14 @@ def _parse_text_curves(text: str) -> List[ParsedSpectrumData]:
     data: List[List[float]] = []
     header: List[str] = []
     metadata: Dict[str, Any] = {"delimiter": delimiter}
-    for line_number, line in enumerate(text.lstrip("\ufeff").splitlines(), 1):
+    all_lines = text.lstrip("\ufeff").splitlines()
+    last_line = max((n for n, line in enumerate(all_lines, 1) if line.strip()), default=0)
+    for line_number, line in enumerate(all_lines, 1):
         line = line.strip()
         if not line:
+            continue
+        if not data and re.fullmatch(r"#\w+(?:\s+#\w+)+", line):
+            header = line.split()   # WiRE column header, e.g. "#Time  #Wave  #Intensity"
             continue
         if line.startswith(_COMMENTS):
             for key, value in re.findall(r"\b(x_unit|y_unit|y_kind|technique)\s*=\s*([^;\s]+)", line):
@@ -152,10 +157,16 @@ def _parse_text_curves(text: str) -> List[ParsedSpectrumData]:
         try:
             values = [_number(value, delimiter) for value in parts]
         except ValueError as exc:
+            if line_number == last_line and len(data) >= 2:
+                # A truncated or garbled final line (e.g. "100.9\t11034.3S") is
+                # left out, and the import says so instead of rejecting the file.
+                metadata.setdefault("import_warnings", []).append(
+                    f"Poškozený poslední řádek {line_number} byl vynechán.")
+                continue
             if data or _NUMBER_START.match(line.lstrip('"')):
                 raise SpectrumParseError(f"Neplatná nebo chybějící číselná hodnota na řádku {line_number}") from exc
             if len(parts) >= 2:
-                header = [value.strip() for value in parts]
+                header = [value.strip() for value in parts if value.strip()]
             continue
         if len(values) < 2:
             if data:
@@ -169,6 +180,9 @@ def _parse_text_curves(text: str) -> List[ParsedSpectrumData]:
     if header and len(header) != len(data[0]):
         raise SpectrumParseError("Záhlaví sloupců neodpovídá číselné tabulce")
     columns = list(zip(*data))
+    long_format = _wire_long_format(header, columns, metadata)
+    if long_format is not None:
+        return long_format
     results = []
     for column, values in enumerate(columns[1:], 1):
         name = header[column] if header else f"Spectrum {column}"
@@ -176,6 +190,36 @@ def _parse_text_curves(text: str) -> List[ParsedSpectrumData]:
         item_metadata.update(metadata)
         item_metadata.update({"name": name, "column_index": column, "column_names": header})
         results.append(_normalize(ParsedSpectrumData(list(columns[0]), list(values), item_metadata)))
+    return results
+
+
+def _wire_long_format(header, columns, metadata):
+    """Renishaw WiRE exports of series/maps: #Time|#X #Y ..., #Wave, #Intensity.
+
+    Rows are grouped by the leading columns (time or stage position), giving
+    one spectrum per group; otherwise None.
+    """
+    names = [name.lstrip("#").strip().lower() for name in header]
+    if len(names) < 3 or names[-2:] != ["wave", "intensity"] or len(names) != len(columns):
+        return None
+    groups: Dict[tuple, List[int]] = {}
+    for row, key in enumerate(zip(*columns[:-2])):
+        groups.setdefault(key, []).append(row)
+    results = []
+    for index, (key, rows) in enumerate(groups.items()):
+        if names[:-2] == ["time"]:
+            label = f"t = {key[0]:g} s"
+        else:
+            label = ", ".join(f"{name} = {value:g}" for name, value in zip(names[:-2], key))
+        item_metadata = dict(metadata)
+        item_metadata.update({
+            "technique": "raman", "x_unit": "cm^-1", "y_kind": "intensity",
+            "name": label, "series_label": label, "series_index": index,
+            "source_layout": "wire_long_format",
+            **{f"series_{name}": float(value) for name, value in zip(names[:-2], key)},
+        })
+        results.append(_normalize(ParsedSpectrumData(
+            [columns[-2][r] for r in rows], [columns[-1][r] for r in rows], item_metadata)))
     return results
 
 
@@ -206,10 +250,20 @@ def parse_spectrum_files(filepath: str) -> List[ParsedSpectrumData]:
     path = Path(filepath)
     extension = path.suffix.lower()
     try:
-        if extension == ".spa":
-            item = parse_spa_file(str(path))
+        # Content wins over the extension: exports are often renamed (e.g. OMNIC
+        # SPA saved as .txt).
+        with path.open("rb") as handle:
+            head = handle.read(32)
+        if head.startswith(b"Spectral Data File") and extension != ".spg":
+            extension = ".spa"
+        elif head.startswith(b"WDF1"):
+            extension = ".wdf"
+        if extension in {".spa", ".spg"}:
+            from core.spa_parser import is_spectrum_group, parse_spg_file
+            items = (parse_spg_file(str(path)) if extension == ".spg" or is_spectrum_group(str(path))
+                     else [parse_spa_file(str(path))])
             results = [ParsedSpectrumData(item.x, item.y, dict(item.metadata),
-                       [ImportedPeakData(peak.x, peak.label) for peak in item.peaks])]
+                       [ImportedPeakData(peak.x, peak.label) for peak in item.peaks]) for item in items]
         elif extension == ".wdf":
             from core.wdf_parser import parse_wdf_file
             results = [ParsedSpectrumData(item["x"], item["y"], item["metadata"]) for item in parse_wdf_file(str(path))]

@@ -129,6 +129,47 @@ class ImportTests(unittest.TestCase):
         with self.assertRaisesRegex(SpectrumParseError, 'nekonečné'):
             parse_spectrum_files(self.file('.spa', bytes(blob)))
 
+    def test_spg_group_yields_named_spectra(self):
+        one = bytearray(self.spa(peaks=False))
+        title = b'Run_50mV_-200mV.txt\x00'
+        # Group: header/data/title blocks for two spectra in one table.
+        blob = bytearray(1200)
+        blob[:18] = b'Spectral Data File'
+        entries = [(2, 512, 208), (107, 900, len(title)), (3, 720, 12),
+                   (2, 512, 208), (107, 900, len(title)), (3, 720, 12)]
+        struct.pack_into('<H', blob, 294, len(entries))
+        for index, (key, offset, length) in enumerate(entries):
+            position = 304 + index * 16
+            blob[position] = key
+            struct.pack_into('<II', blob, position + 2, offset, length)
+        blob[512:720] = one[512:720]
+        blob[720:732] = one[720:732]
+        blob[900:900 + len(title)] = title
+        curves = parse_spectrum_files(self.file('.spg', bytes(blob)))
+        self.assertEqual(len(curves), 2)
+        self.assertEqual(curves[0].metadata['name'], 'Run_50mV_-200mV')
+        self.assertEqual(curves[0].metadata['source_format'], 'spg')
+
+    def test_content_detection_beats_extension(self):
+        item = parse_spectrum_file(self.file('.txt', self.spa(peaks=False)))
+        self.assertEqual(item.metadata['source_format'], 'spa')
+
+    def test_wire_long_format_series_becomes_spectra(self):
+        rows = ["#Time\t\t#Wave\t\t#Intensity"]
+        for time in (0, 464):
+            rows += [f"{time}.000000\t{x:.3f}\t{100 + time + x:.3f}" for x in (1002.5, 1001.0, 999.5)]
+        curves = parse_spectrum_files(self.file('.txt', "\n".join(rows) + "\n"))
+        self.assertEqual([c.metadata['series_label'] for c in curves], ['t = 0 s', 't = 464 s'])
+        self.assertEqual(curves[1].x, [999.5, 1001.0, 1002.5])
+        self.assertEqual(curves[1].y[0], 100 + 464 + 999.5)
+
+    def test_garbled_final_line_is_skipped_with_warning(self):
+        item = parse_spectrum_file(self.file('.txt', '1\t2\n2\t3\n3\t4\n4\t5S\n'))
+        self.assertEqual(item.x, [1, 2, 3])
+        self.assertIn('poslední řádek', item.metadata['import_warnings'][0])
+        with self.assertRaisesRegex(SpectrumParseError, 'řádku 2'):
+            parse_spectrum_files(self.file('.txt', '1\t2\n2\t3S\n3\t4\n'))
+
     def test_spa_truncated_payload_not_stretched(self):
         with self.assertRaisesRegex(SpectrumParseError, 'počtu bodů'):
             parse_spectrum_files(self.file('.spa', self.spa(payload_count=2, declared_count=3)))

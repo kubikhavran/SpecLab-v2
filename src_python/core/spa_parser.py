@@ -326,34 +326,22 @@ def _extract_peaks(blob: bytes, entries: List[_SPAEntry], x: List[float]) -> tup
     return [], ""
 
 
-def parse_spa_file(filepath: str) -> SPAParseResult:
-    """
-    Parse an OMNIC `.spa` file and return spectrum plus embedded peak entries.
-    """
+def _read_blob(filepath: str) -> bytes:
     try:
         with open(filepath, "rb") as fh:
             blob = fh.read()
     except OSError as exc:
         raise SPAParseError(f"Soubor SPA nelze načíst: {exc}") from exc
-
     if len(blob) < 600:
         raise SPAParseError("Soubor je příliš malý na to, aby mohl být platným spektrem SPA")
     if not blob.startswith(_SIGNATURE):
         raise SPAParseError("Soubor nebyl rozpoznán jako spektrum OMNIC SPA")
+    return blob
 
-    entries = _scan_entries(blob)
-    metadata: Dict[str, Any] = {"source_format": "spa", "source_vendor": "omnic"}
 
-    original_name = _read_name(blob)
-    if original_name:
-        metadata["omnic_name"] = original_name
-
-    # Timestamp semantics depend on producer; preserve its raw value.
-    metadata["omnic_raw_timestamp"] = _read_u32(blob, 296)
-
-    x_array: np.ndarray
-    y_array: np.ndarray
-
+def _spectrum(blob: bytes, entries: List[_SPAEntry], metadata: Dict[str, Any]) -> SPAParseResult:
+    """One spectrum from its header (2), data (3) and annotation (104) entries."""
+    metadata = dict(metadata)
     header, y_array = _extract_main_curve(blob, entries)
     x_array = np.linspace(header["first_x"], header["last_x"], header["nx"], dtype=np.float64)
     metadata.update({"x_units": header["x_units"], "y_units": header["y_units"],
@@ -378,7 +366,58 @@ def parse_spa_file(filepath: str) -> SPAParseResult:
     x = x_sorted.tolist()
     y = y_sorted.tolist()
     peaks, peak_source = _extract_peaks(blob, entries, x)
-
     if peaks:
         metadata["imported_peaks_source"] = peak_source
     return SPAParseResult(x=x, y=y, metadata=metadata, peaks=peaks)
+
+
+def _base_metadata(blob: bytes) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {"source_format": "spa", "source_vendor": "omnic"}
+    original_name = _read_name(blob)
+    if original_name:
+        metadata["omnic_name"] = original_name
+    # Timestamp semantics depend on producer; preserve its raw value.
+    metadata["omnic_raw_timestamp"] = _read_u32(blob, 296)
+    return metadata
+
+
+def parse_spa_file(filepath: str) -> SPAParseResult:
+    """Parse an OMNIC `.spa` file and return spectrum plus embedded peak entries."""
+    blob = _read_blob(filepath)
+    return _spectrum(blob, _scan_entries(blob), _base_metadata(blob))
+
+
+_TITLE_KEY = 107   # per-spectrum title in OMNIC groups (often the source file name)
+
+
+def is_spectrum_group(filepath: str) -> bool:
+    blob = _read_blob(filepath)
+    return sum(entry.key == 2 for entry in _scan_entries(blob)) > 1
+
+
+def parse_spg_file(filepath: str) -> List[SPAParseResult]:
+    """OMNIC group (.SPG): consecutive header-led blocks, one spectrum each."""
+    blob = _read_blob(filepath)
+    entries = _scan_entries(blob)
+    groups: List[List[_SPAEntry]] = []
+    for entry in entries:
+        if entry.key == 2:
+            groups.append([])
+        if groups:
+            groups[-1].append(entry)
+    groups = [group for group in groups if any(entry.key == 3 for entry in group)]
+    if not groups:
+        raise SPAParseError("Skupina SPG neobsahuje žádná spektra")
+    base = _base_metadata(blob)
+    base["source_format"] = "spg"
+    results = []
+    for index, group in enumerate(groups):
+        metadata = dict(base, spectrum_index=index)
+        title = next((entry for entry in group if entry.key == _TITLE_KEY), None)
+        if title is not None and title.offset + title.length <= len(blob):
+            text = blob[title.offset:title.offset + title.length].split(b"\x00", 1)[0]
+            name = text.decode("latin-1").strip()
+            if name:
+                metadata["name"] = re.sub(r"\.(txt|spa|csv)$", "", name, flags=re.IGNORECASE)
+        results.append(_spectrum(blob, group, metadata))
+    return results

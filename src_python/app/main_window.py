@@ -64,11 +64,12 @@ ACCEPTED_EXTENSIONS = {
     ".xy",
     ".spc",
     ".spa",
+    ".spg",
     ".wdf",
     ".jdx",
     ".dx",
 }
-FILE_FILTER = "Spektra (*.txt *.csv *.tsv *.dat *.asc *.xy *.spc *.spa *.wdf *.jdx *.dx);;Všechny soubory (*)"
+FILE_FILTER = "Spektra (*.txt *.csv *.tsv *.dat *.asc *.xy *.spc *.spa *.spg *.wdf *.jdx *.dx);;Všechny soubory (*)"
 TECHNIQUES = {
     "raman": "Raman",
     "infrared": "IR",
@@ -122,6 +123,8 @@ def spectrum_display_name(path, metadata: dict, index: int, count: int) -> str:
     """
     stem = extract_label_from_filename(path)
     title = metadata.get("name")
+    if "series_label" in metadata:   # e.g. WiRE time series: "file · t = 464 s"
+        return f"{stem} · {metadata['series_label']}"
     if "column_index" in metadata:
         return stem if count == 1 else f"{stem} · {title or index + 1}"
     name = title or stem
@@ -752,7 +755,7 @@ class MainWindow(QMainWindow):
 
     @with_busy_cursor
     def _load_files(self, paths):
-        errors = []
+        errors, warnings = [], []
         count = 0
         for path in paths:
             try:
@@ -763,6 +766,7 @@ class MainWindow(QMainWindow):
                     meta = {
                         "sourcePath": str(path),
                         "sourceName": Path(path).name,
+                        "sourceCount": len(curves),
                         **parsed.metadata,
                     }
                     peaks = [
@@ -775,6 +779,10 @@ class MainWindow(QMainWindow):
                 # One signal round per file keeps large WDF maps responsive.
                 self._state.add_spectra(batch)
                 count += len(batch)
+                for message in dict.fromkeys(
+                    warning for parsed in curves for warning in parsed.metadata.get("import_warnings", [])
+                ):
+                    warnings.append(f"{Path(path).name}: {message}")
             except (SpectrumParseError, ValueError, OSError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
         if paths:
@@ -782,9 +790,10 @@ class MainWindow(QMainWindow):
         self._fit()
         self.statusBar().showMessage(
             f"Načteno {count} spekter" + (f" · chyb: {len(errors)}" if errors else "")
+            + (f" · varování: {len(warnings)}" if warnings else "")
         )
-        if errors:
-            QMessageBox.warning(self, "Import souborů", "\n".join(errors[:12]))
+        if errors or warnings:
+            QMessageBox.warning(self, "Import souborů", "\n".join((errors + warnings)[:12]))
 
     def _fit(self):
         self._state.set_plot(x_min=None, x_max=None, y_min=None, y_max=None)
