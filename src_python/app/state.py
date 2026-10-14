@@ -234,7 +234,7 @@ class AppState(QObject):
         prepared = []
         for spectrum, peaks in items:
             if spectrum.id in ids:
-                raise ValueError('A spectrum with this id is already loaded.')
+                raise ValueError('Spektrum s tímto ID je již načtené.')
             ids.add(spectrum.id)
             self._validate_data(spectrum.x, spectrum.y)
             prepared.append((spectrum, self._validated_metadata(spectrum.meta), peaks))
@@ -294,12 +294,12 @@ class AppState(QObject):
 
     def rename_spectra(self, mapping: dict[str, str]) -> Optional[dict]:
         if not isinstance(mapping, dict):
-            raise ValueError('Spectrum renaming requires an id-to-name mapping.')
+            raise ValueError('Přejmenování spekter vyžaduje mapování ID na název.')
         if not mapping:
             return None
         self._resolve_ids(list(mapping))
         if any(not isinstance(name, str) or not name.strip() or len(name) > 1000 for name in mapping.values()):
-            raise ValueError('Spectrum names must contain between 1 and 1000 characters.')
+            raise ValueError('Názvy spekter musí obsahovat 1 až 1 000 znaků.')
         changed = {sid: name.strip() for sid, name in mapping.items()
                    if next(s.name for s in self._spectra if s.id == sid) != name.strip()}
         if not changed:
@@ -319,7 +319,7 @@ class AppState(QObject):
         if idx is None:
             return
         if direction not in {'up', 'down'}:
-            raise ValueError('Spectrum move direction must be up or down.')
+            raise ValueError('Směr přesunu spektra musí být nahoru nebo dolů.')
         target = idx - 1 if direction == "up" else idx + 1
         if 0 <= target < len(self._spectra):
             before = self._snapshot()
@@ -332,7 +332,7 @@ class AppState(QObject):
     def update_spectrum_metadata(self, spectrum_id: str, **kwargs) -> None:
         spec = next((s for s in self._spectra if s.id == spectrum_id), None)
         if spec is None:
-            raise ValueError('Spectrum is no longer loaded.')
+            raise ValueError('Spektrum již není načtené.')
         meta = self._validated_metadata({**spec.meta, **kwargs})
         if meta == spec.meta:
             return
@@ -457,39 +457,39 @@ class AppState(QObject):
     def _validate_data(x, y) -> None:
         xa, ya = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
         if xa.ndim != 1 or ya.ndim != 1 or len(xa) != len(ya) or len(xa) < 2:
-            raise ValueError('Spectrum must contain equally sized X/Y arrays with at least two points.')
+            raise ValueError('Spektrum musí mít stejně dlouhá pole X/Y s alespoň dvěma body.')
         if len(xa) > 1_000_000 or not np.all(np.isfinite(xa)) or not np.all(np.isfinite(ya)):
-            raise ValueError('Spectrum data must be finite and contain at most 1,000,000 points.')
+            raise ValueError('Data spektra musí být konečná a obsahovat nejvýše 1 000 000 bodů.')
         dx = np.diff(xa)
         if not (np.all(dx > 0) or np.all(dx < 0)):
-            raise ValueError('Spectrum X values must be strictly increasing or decreasing.')
+            raise ValueError('Hodnoty X ve spektru musí být přísně vzestupné nebo sestupné.')
 
     @staticmethod
     def _validated_metadata(meta: dict) -> dict:
         if not isinstance(meta, dict):
-            raise ValueError('Spectrum metadata must be an object.')
+            raise ValueError('Metadata spektra musí být objekt.')
         result = copy.deepcopy(meta)
         result.setdefault('technique', 'custom')
         result.setdefault('y_kind', 'intensity')
         result.setdefault('x_unit', 'unknown')
         if not isinstance(result['technique'], str) or result['technique'] not in {'raman', 'infrared', 'uv_vis', 'custom'}:
-            raise ValueError('Unknown spectral technique.')
+            raise ValueError('Neznámá spektrální technika.')
         if not isinstance(result['y_kind'], str) or result['y_kind'] not in {
             'intensity', 'absorbance', 'transmittance_percent', 'transmittance_fraction',
         }:
-            raise ValueError('Unknown ordinate type.')
+            raise ValueError('Neznámý typ ordináty.')
         if not isinstance(result['x_unit'], str) or len(result['x_unit']) > 100:
-            raise ValueError('X unit must be a short string.')
+            raise ValueError('Jednotka X musí být krátký text.')
         # Absolute positions from earlier builds drift with stacking; fall back to defaults.
         result.pop(_LEGACY_LABEL_POSITIONS, None)
         offsets = result.get(LABEL_OFFSETS, {})
         if not isinstance(offsets, dict) or len(offsets) > 10000:
-            raise ValueError('Peak label offsets must be a bounded object.')
+            raise ValueError('Posuny popisků píků musí být omezený objekt.')
         for pid, coords in offsets.items():
             if not isinstance(pid, str) or not isinstance(coords, list) or len(coords) != 2:
-                raise ValueError('Peak label offsets require an id and two coordinates.')
+                raise ValueError('Posun popisku píku vyžaduje ID a dvě souřadnice.')
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in coords):
-                raise ValueError('Peak label offsets must be finite.')
+                raise ValueError('Posuny popisků píků musí být konečné.')
         return result
 
     def _invalidate(self) -> None:
@@ -506,7 +506,7 @@ class AppState(QObject):
         ids = list(dict.fromkeys(ids))
         loaded = {s.id for s in self._spectra}
         if not ids or any(sid not in loaded for sid in ids):
-            raise ValueError('Select at least one loaded spectrum.')
+            raise ValueError('Vyber alespoň jedno načtené spektrum.')
         return ids
 
     def _data_signature(self, ids: list[str]) -> str:
@@ -530,13 +530,13 @@ class AppState(QObject):
         ids = self._resolve_ids(spectrum_ids)
         operations = validate_operations(operations)
         if source not in {'manual', 'ai', 'preset'}:
-            raise ValueError('Unknown processing source.')
+            raise ValueError('Neznámý zdroj zpracování.')
         label = str(label or ' → '.join(op['op'] for op in operations))[:240]
         results = {}
         for spec in self._spectra:
             if spec.id in ids:
                 if len(self._recipes.get(spec.id, [])) + len(operations) > 100:
-                    raise ValueError('A spectrum recipe supports at most 100 operations. Restore original data before starting another recipe.')
+                    raise ValueError('Recept spektra může obsahovat nejvýše 100 operací. Před vytvořením dalšího receptu obnov původní data.')
                 result = run_operations(spec.x, self.displayed_y(spec.id), spec.meta, operations)
                 result['meta'] = self._validated_metadata(result['meta'])
                 self._validate_data(result['x'], result['y'])
@@ -562,13 +562,13 @@ class AppState(QObject):
         """Accept only the exact locally computed proposal for unchanged data."""
         preview = self._preview if preview is None else preview
         if not isinstance(preview, dict) or self._preview is None:
-            raise ValueError('There is no preview to apply.')
+            raise ValueError('Není k dispozici náhled k použití.')
         if preview != self._preview:
-            raise ValueError('Preview was modified or replaced; generate a new preview.')
+            raise ValueError('Náhled byl změněn nebo nahrazen; vytvoř nový náhled.')
         ids = preview['spectrum_ids']
         if preview['revision'] != self._revision or preview['signature'] != self._data_signature(ids):
             self.clear_preview()
-            raise ValueError('Spectrum changed after the preview. Generate a new preview.')
+            raise ValueError('Spektrum se po náhledu změnilo. Vytvoř nový náhled.')
         before = self._snapshot()
         for spec in self._spectra:
             if spec.id not in ids:
@@ -650,7 +650,7 @@ class AppState(QObject):
         from core.processing import run_operations
 
         if operation not in {'baseline', 'smooth', 'despike'}:
-            raise ValueError('This processing stage cannot be reset separately.')
+            raise ValueError('Tuto fázi zpracování nelze obnovit samostatně.')
         selected = self._resolve_ids(ids)
         results, recipes = {}, {}
         for sid in selected:
@@ -682,12 +682,12 @@ class AppState(QObject):
         from core.peak_detection import detect_peaks, detected_to_peaks
 
         if not isinstance(settings, dict) or set(settings) - (set(SETTINGS) | {'spectral_mode'}):
-            raise ValueError('Invalid preset settings.')
+            raise ValueError('Neplatné nastavení presetu.')
         parsed = {attr: settings_from_dict(cls, settings[key])
                   for key, (attr, cls) in SETTINGS.items() if key in settings}
         mode = settings.get('spectral_mode', self._spectral_mode)
         if mode not in SPECTRAL_MODES:
-            raise ValueError('Unknown preset spectral mode.')
+            raise ValueError('Neznámý spektrální režim presetu.')
         if recipe is not None:
             recipe = validate_operations(recipe) if recipe else []
         results, auto = {}, {}
@@ -734,22 +734,22 @@ class AppState(QObject):
     def edit_peak_label(self, spectrum_id: str, peak_id: str, label: str) -> dict:
         self._resolve_ids([spectrum_id])
         if not isinstance(label, str) or len(label) > 1000:
-            raise ValueError('Peak label must contain at most 1000 characters.')
+            raise ValueError('Popisek píku může obsahovat nejvýše 1 000 znaků.')
         for store in (self.peaks_auto, self.peaks_manual):
             peak = next((p for p in store.get(spectrum_id, []) if p.id == peak_id), None)
             if peak is not None:
                 before = self._snapshot()
                 peak.label = label.strip() or None
                 return self._record_transaction(before, 'Edit peak label', 'manual', [], [spectrum_id])
-        raise ValueError('Peak is no longer present.')
+        raise ValueError('Pík již neexistuje.')
 
     def set_peak_label_offset(self, spectrum_id: str, peak_id: str, dx: float, dy: float) -> dict:
         """Store a dragged label relative to its peak on the (unstacked) curve."""
         self._resolve_ids([spectrum_id])
         if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in (dx, dy)):
-            raise ValueError('Peak label offset must be finite.')
+            raise ValueError('Posun popisku píku musí být konečný.')
         if not any(p.id == peak_id for p in self.peaks_auto.get(spectrum_id, []) + self.peaks_manual.get(spectrum_id, [])):
-            raise ValueError('Peak is no longer present.')
+            raise ValueError('Pík již neexistuje.')
         before = self._snapshot()
         spec = next(s for s in self._spectra if s.id == spectrum_id)
         spec.meta.setdefault(LABEL_OFFSETS, {})[peak_id] = [float(dx), float(dy)]
@@ -766,12 +766,12 @@ class AppState(QObject):
     def add_manual_peak(self, spectrum_id: str, x: float, label: Optional[str] = None) -> Peak:
         self._resolve_ids([spectrum_id])
         if isinstance(x, bool) or not isinstance(x, (int, float)) or not np.isfinite(x):
-            raise ValueError('Manual peak position must be finite.')
+            raise ValueError('Poloha ručního píku musí být konečné číslo.')
         spec = next(s for s in self._spectra if s.id == spectrum_id)
         if not min(spec.x) <= x <= max(spec.x):
-            raise ValueError('Manual peak must lie within the current spectrum.')
+            raise ValueError('Ruční pík musí ležet v rozsahu aktuálního spektra.')
         if label is not None and (not isinstance(label, str) or len(label) > 1000):
-            raise ValueError('Peak label must contain at most 1000 characters.')
+            raise ValueError('Popisek píku může obsahovat nejvýše 1 000 znaků.')
         before = self._snapshot()
         peak = Peak(x=float(x), source='manual', label=label,
                     i=int(np.argmin(np.abs(np.asarray(spec.x) - x))))
@@ -831,7 +831,7 @@ class AppState(QObject):
                 spec = next(s for s in self._spectra if s.id == spectrum_id)
                 spec.meta.get(LABEL_OFFSETS, {}).pop(peak_id, None)
                 return self._record_transaction(before, 'Remove peak', 'manual', [], [spectrum_id])
-        raise ValueError('Peak is no longer present.')
+        raise ValueError('Pík již neexistuje.')
 
     _SNAPSHOT_NAMES = ('_spectra', '_active_spectrum_id', '_original', '_recipes',
                        '_plot', '_baseline', '_smoothing', '_cosmic', '_peaks',

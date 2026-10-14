@@ -106,25 +106,25 @@ class _SPAEntry:
 
 def _read_u8(blob: bytes, offset: int) -> int:
     if offset < 0 or offset + 1 > len(blob):
-        raise SPAParseError("Unexpected end of SPA file")
+        raise SPAParseError("Neočekávaný konec souboru SPA")
     return blob[offset]
 
 
 def _read_u16(blob: bytes, offset: int) -> int:
     if offset < 0 or offset + 2 > len(blob):
-        raise SPAParseError("Unexpected end of SPA file")
+        raise SPAParseError("Neočekávaný konec souboru SPA")
     return struct.unpack_from("<H", blob, offset)[0]
 
 
 def _read_u32(blob: bytes, offset: int) -> int:
     if offset < 0 or offset + 4 > len(blob):
-        raise SPAParseError("Unexpected end of SPA file")
+        raise SPAParseError("Neočekávaný konec souboru SPA")
     return struct.unpack_from("<I", blob, offset)[0]
 
 
 def _read_f32(blob: bytes, offset: int) -> float:
     if offset < 0 or offset + 4 > len(blob):
-        raise SPAParseError("Unexpected end of SPA file")
+        raise SPAParseError("Neočekávaný konec souboru SPA")
     return struct.unpack_from("<f", blob, offset)[0]
 
 
@@ -145,7 +145,7 @@ def _scan_entries(blob: bytes) -> List[_SPAEntry]:
     nlines = _read_u16(blob, 294)
     table_end = _ENTRY_START + nlines * _ENTRY_SIZE
     if not 0 < nlines <= 4096 or table_end > len(blob):
-        raise SPAParseError("Invalid or truncated SPA record table")
+        raise SPAParseError("Neplatná nebo zkrácená tabulka záznamů SPA")
     entries: List[_SPAEntry] = []
     for index in range(nlines):
         pos = _ENTRY_START + index * _ENTRY_SIZE
@@ -155,23 +155,23 @@ def _scan_entries(blob: bytes) -> List[_SPAEntry]:
         if key in (0, 1) and offset == 0 and length == 0:
             continue
         if length and (offset < table_end or offset + length > len(blob)):
-            raise SPAParseError(f"SPA section {key} points outside the valid payload area")
+            raise SPAParseError(f"Sekce SPA {key} odkazuje mimo platnou oblast dat")
         entries.append(_SPAEntry(key=key, offset=offset, length=length))
     return entries
 
 
 def _parse_header(blob: bytes, header_offset: int, header_length: int) -> Dict[str, Any]:
     if header_length < 24 or header_offset <= 0 or header_offset + header_length > len(blob):
-        raise SPAParseError("SPA header position is invalid")
+        raise SPAParseError("Pozice hlavičky SPA je neplatná")
 
     nx = _read_u32(blob, header_offset + 4)
     if nx < 2:
-        raise SPAParseError("SPA header contains too few points")
+        raise SPAParseError("Hlavička SPA obsahuje příliš málo bodů")
 
     first_x = _read_f32(blob, header_offset + 16)
     last_x = _read_f32(blob, header_offset + 20)
     if not np.isfinite(first_x) or not np.isfinite(last_x) or first_x == last_x:
-        raise SPAParseError("SPA header contains invalid x-axis limits")
+        raise SPAParseError("Hlavička SPA obsahuje neplatné meze osy X")
 
     x_unit_key = _read_u8(blob, header_offset + 8)
     y_unit_key = _read_u8(blob, header_offset + 12)
@@ -207,10 +207,10 @@ def _parse_header(blob: bytes, header_offset: int, header_length: int) -> Dict[s
 
 def _read_float_vector(blob: bytes, offset: int, count: int) -> np.ndarray:
     if count <= 0:
-        raise SPAParseError("SPA data block has no points")
+        raise SPAParseError("Datový blok SPA neobsahuje žádné body")
     n_bytes = count * 4
     if offset < 0 or offset + n_bytes > len(blob):
-        raise SPAParseError("SPA data block points outside file bounds")
+        raise SPAParseError("Datový blok SPA přesahuje rozsah souboru")
     return np.frombuffer(blob, dtype="<f4", count=count, offset=offset).astype(
         np.float64,
         copy=False,
@@ -220,22 +220,22 @@ def _read_float_vector(blob: bytes, offset: int, count: int) -> np.ndarray:
 def _extract_main_curve(blob: bytes, entries: Iterable[_SPAEntry]) -> tuple[Dict[str, Any], np.ndarray]:
     header_entry = next((entry for entry in entries if entry.key == 2), None)
     if header_entry is None:
-        raise SPAParseError("SPA header marker (key=2) was not found")
+        raise SPAParseError("Značka hlavičky SPA (key=2) nebyla nalezena")
 
     if sum(entry.key == 2 for entry in entries) != 1 or sum(entry.key == 3 for entry in entries) != 1:
-        raise SPAParseError("SPA requires exactly one primary header and payload")
+        raise SPAParseError("SPA musí obsahovat právě jednu hlavní hlavičku a datovou část")
     header = _parse_header(blob, header_entry.offset, header_entry.length)
     if header["x_unit_key"] == 2:
-        raise SPAParseError("SPA data-points/interferogram payload is not a supported spectrum")
+        raise SPAParseError("Datové body/interferogram SPA nejsou podporovaným spektrem")
     spectral_entry = next((entry for entry in entries if entry.key == 3), None)
     if spectral_entry is None:
-        raise SPAParseError("SPA spectrum data marker (key=3) was not found")
+        raise SPAParseError("Značka spektrálních dat SPA (key=3) nebyla nalezena")
     expected_n = int(header["nx"])
     if spectral_entry.length != expected_n * 4:
-        raise SPAParseError("SPA payload length does not match the declared point count; data will not be rescaled")
+        raise SPAParseError("Délka datové části SPA neodpovídá deklarovanému počtu bodů; data nebudou přepočítána")
     y = _read_float_vector(blob, spectral_entry.offset, expected_n)
     if not np.all(np.isfinite(y)):
-        raise SPAParseError("SPA contains non-finite ordinate values")
+        raise SPAParseError("SPA obsahuje nekonečné nebo nečíselné hodnoty ordináty")
     return header, y
 
 
@@ -419,12 +419,12 @@ def parse_spa_file(filepath: str) -> SPAParseResult:
         with open(filepath, "rb") as fh:
             blob = fh.read()
     except OSError as exc:
-        raise SPAParseError(f"Cannot read SPA file: {exc}") from exc
+        raise SPAParseError(f"Soubor SPA nelze načíst: {exc}") from exc
 
     if len(blob) < 600:
-        raise SPAParseError("File is too small to be a valid SPA spectrum")
+        raise SPAParseError("Soubor je příliš malý na to, aby mohl být platným spektrem SPA")
     if not blob.startswith(_SIGNATURE):
-        raise SPAParseError("File is not recognized as an OMNIC SPA spectrum")
+        raise SPAParseError("Soubor nebyl rozpoznán jako spektrum OMNIC SPA")
 
     entries = _scan_entries(blob)
     metadata: Dict[str, Any] = {"source_format": "spa", "source_vendor": "omnic"}

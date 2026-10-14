@@ -28,7 +28,7 @@ _ORIGIN_NAMES = {3: "stage_x", 4: "stage_y", 5: "stage_z", 9: "temperature", 10:
 
 def _unpack(blob: bytes, fmt: str, offset: int):
     if offset < 0 or offset + struct.calcsize(fmt) > len(blob):
-        raise WDFParseError("Truncated WDF header or data block")
+        raise WDFParseError("Zkrácená hlavička nebo datový blok WDF")
     return struct.unpack_from(fmt, blob, offset)
 
 
@@ -39,7 +39,7 @@ def _text(blob: bytes) -> str:
 def parse_wdf_file(filepath: str) -> list[dict[str, Any]]:
     blob = Path(filepath).read_bytes()
     if len(blob) < 512 or blob[:4] != b"WDF1":
-        raise WDFParseError("Not a valid Renishaw WDF1 file")
+        raise WDFParseError("Soubor není platný Renishaw WDF1")
     version = _unpack(blob, "<I", 4)[0]
     header_size, flags = _unpack(blob, "<QQ", 8)
     ntracks, status, points = _unpack(blob, "<III", 52)
@@ -49,34 +49,34 @@ def parse_wdf_file(filepath: str) -> list[dict[str, Any]]:
     y_unit = _unpack(blob, "<I", 152)[0]
     laser = _unpack(blob, "<f", 156)[0]
     if version != 1 or header_size < 512 or header_size > len(blob):
-        raise WDFParseError("Unsupported WDF header version or length")
+        raise WDFParseError("Nepodporovaná verze nebo délka hlavičky WDF")
     if flags & 0x09 or ntracks > 1:
-        raise WDFParseError("WDF multitrack/XYXY data requires a dedicated reader; export single-track spectra from WiRE")
+        raise WDFParseError("Data WDF multitrack/XYXY vyžadují specializovanou čtečku; exportuj z WiRE jednospektrální data")
     if (scan_type & 0xFF) in (4, 5) or measurement_type not in (1, 2, 3):
-        raise WDFParseError("Unsupported WDF image or measurement layout")
+        raise WDFParseError("Nepodporované rozložení obrazu nebo měření WDF")
     if points < 2 or xcount != points or not 0 < collected <= capacity:
-        raise WDFParseError("Invalid WDF point count, X list, or collected spectrum count")
+        raise WDFParseError("Neplatný počet bodů, seznam X nebo počet naměřených spekter ve WDF")
     if collected * points > (len(blob) // 4):
-        raise WDFParseError("WDF dimensions exceed available data")
+        raise WDFParseError("Rozměry WDF přesahují dostupná data")
     sections: dict[bytes, list[tuple[int, int]]] = {}
     position = header_size
     while position < len(blob):
         tag, uid, size = _unpack(blob, "<4sIQ", position)
         if size < 16 or position + size > len(blob):
-            raise WDFParseError("Invalid or truncated WDF section length")
+            raise WDFParseError("Neplatná nebo zkrácená délka sekce WDF")
         sections.setdefault(tag, []).append((position + 16, size - 16))
         position += size
     for tag in (b"DATA", b"XLST"):
         if len(sections.get(tag, [])) != 1:
-            raise WDFParseError(f"WDF requires exactly one {tag.decode()} section")
+            raise WDFParseError(f"WDF musí obsahovat právě jednu sekci {tag.decode()}")
     xpos, xsize = sections[b"XLST"][0]
     xtype, xunit = _unpack(blob, "<II", xpos)
     if xsize != 8 + points * 4 or xtype not in (1, 19):
-        raise WDFParseError("Unsupported WDF X-list dimensions or data type")
+        raise WDFParseError("Nepodporované rozměry nebo datový typ seznamu X ve WDF")
     x = list(_unpack(blob, f"<{points}f", xpos + 8))
     dpos, dsize = sections[b"DATA"][0]
     if dsize % 4 or dsize < collected * points * 4 or dsize > capacity * points * 4:
-        raise WDFParseError("Truncated or inconsistent WDF spectral DATA section")
+        raise WDFParseError("Zkrácená nebo nekonzistentní spektrální sekce DATA ve WDF")
     base = {"source_format": "wdf", "source_vendor": "renishaw", "name": _text(blob[240:400]) or Path(filepath).stem,
             "technique": "raman" if xunit == 1 else "unknown", "x_unit": _UNITS.get(xunit, "unknown"),
             "y_kind": "intensity", "y_unit": _UNITS.get(y_unit, "unknown"), "x_unit_code": xunit,
@@ -87,11 +87,11 @@ def parse_wdf_file(filepath: str) -> list[dict[str, Any]]:
     origins: list[dict[str, Any]] = [{} for _ in range(collected)]
     if b"ORGN" in sections:
         if len(sections[b"ORGN"]) != 1:
-            raise WDFParseError("Unsupported multiple WDF ORGN sections")
+            raise WDFParseError("Více sekcí ORGN ve WDF není podporováno")
         opos, osize = sections[b"ORGN"][0]
         origin_count = _unpack(blob, "<I", opos)[0]
         if 4 + origin_count * (24 + capacity * 8) != osize:
-            raise WDFParseError("Inconsistent WDF origin record length")
+            raise WDFParseError("Nekonzistentní délka záznamu ORGN ve WDF")
         cursor = opos + 4
         for _ in range(origin_count):
             dtype, unit = _unpack(blob, "<II", cursor)
@@ -105,9 +105,9 @@ def parse_wdf_file(filepath: str) -> list[dict[str, Any]]:
                     try:
                         value = (datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=value // 10)).isoformat()
                     except OverflowError as exc:
-                        raise WDFParseError("Invalid WDF timestamp") from exc
+                        raise WDFParseError("Neplatné časové razítko WDF") from exc
                 elif not math.isfinite(value):
-                    raise WDFParseError("Non-finite WDF origin value")
+                    raise WDFParseError("Nekonečná nebo nečíselná hodnota původu WDF")
                 origins[index][key] = value
                 origins[index][f"{key}_unit"] = _UNITS.get(unit, str(unit))
                 if label:
@@ -116,13 +116,13 @@ def parse_wdf_file(filepath: str) -> list[dict[str, Any]]:
     if b"WMAP" in sections:
         mpos, msize = sections[b"WMAP"][0]
         if msize < 48:
-            raise WDFParseError("Truncated WDF map definition")
+            raise WDFParseError("Zkrácená definice mapy WDF")
         mapflags = _unpack(blob, "<I", mpos)[0]
         start = _unpack(blob, "<3f", mpos + 8)
         step = _unpack(blob, "<3f", mpos + 20)
         shape = _unpack(blob, "<3I", mpos + 32)
         if not all(math.isfinite(value) for value in (*start, *step)):
-            raise WDFParseError("Non-finite WDF map coordinates")
+            raise WDFParseError("Nekonečné nebo nečíselné souřadnice mapy WDF")
         base["map_definition"] = {"flags": mapflags, "start": list(start), "step": list(step), "shape": list(shape)}
     results = []
     for index in range(collected):

@@ -113,6 +113,21 @@ SOURCE_LABELS = {"manual": "ručně", "ai": "AI", "preset": "preset"}
 PEAK_SOURCES = {"auto": "auto", "manual": "ruční"}
 
 
+def spectrum_display_name(path, metadata: dict, index: int, count: int) -> str:
+    """Library name for an imported curve.
+
+    Text tables name curves by file (a header such as "Intensity" repeats in
+    every file); several Y columns add the column title. Vendor formats keep
+    their measurement title.
+    """
+    stem = extract_label_from_filename(path)
+    title = metadata.get("name")
+    if "column_index" in metadata:
+        return stem if count == 1 else f"{stem} · {title or index + 1}"
+    name = title or stem
+    return f"{name} · {index + 1}" if count > 1 else name
+
+
 def history_text(record: dict) -> str:
     label = str(record.get("label", "Úprava"))
     label = HISTORY_LABELS.get(
@@ -734,11 +749,7 @@ class MainWindow(QMainWindow):
                 curves = parse_spectrum_files(path)
                 batch = []
                 for index, parsed in enumerate(curves):
-                    name = parsed.metadata.get("name") or extract_label_from_filename(
-                        path
-                    )
-                    if len(curves) > 1:
-                        name += f" · {index + 1}"
+                    name = spectrum_display_name(path, parsed.metadata, index, len(curves))
                     meta = {
                         "sourcePath": str(path),
                         "sourceName": Path(path).name,

@@ -56,7 +56,7 @@ def _number(value, decimal_comma=False) -> str:
         return ''
     numeric = float(value)
     if not math.isfinite(numeric):
-        raise ValueError('Export data must contain only finite numbers.')
+        raise ValueError('Exportovaná data mohou obsahovat pouze konečná čísla.')
     text = repr(numeric)
     return text.replace('.', ',') if decimal_comma else text
 
@@ -65,7 +65,7 @@ def _spectrum_data(state, spec, original=False):
     if original:
         data = state.original_data(spec.id)
         if data is None:
-            raise ValueError(f'Imported data are unavailable for {spec.name}.')
+            raise ValueError(f'Importovaná data pro spektrum {spec.name} nejsou dostupná.')
         x, y = data
         meta = state.original_metadata(spec.id)
     else:
@@ -74,7 +74,7 @@ def _spectrum_data(state, spec, original=False):
         y = spec.y if y is None else y
         meta = spec.meta
     if len(x) != len(y) or not x:
-        raise ValueError(f'Inconsistent X/Y data in {spec.name}.')
+        raise ValueError(f'Nekonzistentní data X/Y ve spektru {spec.name}.')
     return x, y, meta
 
 
@@ -108,7 +108,7 @@ def peaks_to_text(state, spectra, delimiter=';', decimal_comma=False) -> str:
             values = state.processed_y.get(spec.id, values)
         y = np.asarray(spec.y if values is None else values, dtype=float)
         if len(x) != len(y) or not len(x):
-            raise ValueError(f'Inconsistent peak data in {spec.name}.')
+            raise ValueError(f'Nekonzistentní data píků ve spektru {spec.name}.')
         if x[0] > x[-1]:
             x, y = x[::-1], y[::-1]
         peaks = state.peaks_auto.get(spec.id, []) + state.peaks_manual.get(spec.id, [])

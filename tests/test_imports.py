@@ -35,7 +35,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(spectra[1].y, [0.4, 0.6, 0.2])
         self.assertEqual(spectra[0].metadata['x_unit'], 'cm^-1')
         self.assertEqual(spectra[0].metadata['y_kind'], 'absorbance')
-        with self.assertRaisesRegex(SpectrumParseError, 'several spectra'):
+        with self.assertRaisesRegex(SpectrumParseError, 'několik spekter'):
             parse_spectrum_file(path)
 
     def test_csv_quoted_headers_and_values(self):
@@ -55,7 +55,7 @@ class ImportTests(unittest.TestCase):
                 parse_spectrum_files(self.file('.csv', '1,2\n' + row + '\n3,4\n'))
 
     def test_duplicate_x_rejected(self):
-        with self.assertRaisesRegex(SpectrumParseError, 'Duplicate X'):
+        with self.assertRaisesRegex(SpectrumParseError, 'Duplicitní souřadnice X'):
             parse_spectrum_file(self.file('.txt', '1 2\n1 3\n2 4\n'))
 
     @staticmethod
@@ -87,13 +87,13 @@ class ImportTests(unittest.TestCase):
         self.assertTrue(any(p.x == 2000 and 'Carbonyl' in p.label for p in item.imported_peaks))
 
     def test_spa_truncated_payload_not_stretched(self):
-        with self.assertRaisesRegex(SpectrumParseError, 'point count'):
+        with self.assertRaisesRegex(SpectrumParseError, 'počtu bodů'):
             parse_spectrum_files(self.file('.spa', self.spa(payload_count=2, declared_count=3)))
 
     def test_spa_bad_table_does_not_use_legacy_guess(self):
         blob = bytearray(self.spa())
         struct.pack_into('<H', blob, 294, 1000)
-        with self.assertRaisesRegex(SpectrumParseError, 'record table'):
+        with self.assertRaisesRegex(SpectrumParseError, 'tabulka záznamů'):
             parse_spectrum_files(self.file('.spa', bytes(blob)))
 
     def test_spa_rejects_interferogram(self):
@@ -123,7 +123,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(items[0].metadata['capacity'], 3)
 
     def test_wdf_rejects_truncated_blocks_and_multitrack(self):
-        with self.assertRaisesRegex(SpectrumParseError, 'truncated'):
+        with self.assertRaisesRegex(SpectrumParseError, 'zkrácen'):
             parse_spectrum_files(self.file('.wdf', self.wdf()[:-1]))
         with self.assertRaisesRegex(SpectrumParseError, 'multitrack'):
             parse_spectrum_files(self.file('.wdf', self.wdf(flags=8)))

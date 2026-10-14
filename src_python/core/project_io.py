@@ -31,7 +31,7 @@ def _safe_json(value):
         result = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise ValueError('Project metadata keys must be strings.')
+                raise ValueError('Klíče metadat projektu musí být textové řetězce.')
             normalized = key.lower().replace('-', '_')
             if any(part in normalized for part in ('password', 'secret', 'token', 'authorization', 'api_key', 'apikey')):
                 continue
@@ -43,17 +43,17 @@ def _safe_json(value):
         return value
     if isinstance(value, float) and math.isfinite(value):
         return value
-    raise ValueError('Project contains metadata that cannot be saved as finite JSON.')
+    raise ValueError('Projekt obsahuje metadata, která nelze uložit jako konečný JSON.')
 
 
 def settings_from_dict(cls, data: dict):
     """Validate project and preset settings before touching application state."""
     if not isinstance(data, dict):
-        raise ValueError('Settings must be an object.')
+        raise ValueError('Nastavení musí být objekt.')
     instance = cls()
     allowed = {field.name for field in fields(cls)}
     if set(data) - allowed:
-        raise ValueError(f'Unknown {cls.__name__} settings: {", ".join(sorted(set(data) - allowed))}')
+        raise ValueError(f'Neznámé položky nastavení {cls.__name__}: {", ".join(sorted(set(data) - allowed))}')
     for key, value in data.items():
         default = getattr(instance, key)
         if isinstance(default, bool):
@@ -67,9 +67,9 @@ def settings_from_dict(cls, data: dict):
         else:
             valid = isinstance(value, str) and len(value) <= 1024
         if not valid:
-            raise ValueError(f'Invalid value for {cls.__name__}.{key}.')
+            raise ValueError(f'Neplatná hodnota pro {cls.__name__}.{key}.')
         if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) > 1e12:
-            raise ValueError(f'Setting {key} exceeds its allowed range.')
+            raise ValueError(f'Nastavení {key} překračuje povolený rozsah.')
         setattr(instance, key, value)
     enums = {
         'mode': {'active', 'all'}, 'source': {'displayed', 'processed'},
@@ -79,7 +79,7 @@ def settings_from_dict(cls, data: dict):
     }
     for key, options in enums.items():
         if hasattr(instance, key) and getattr(instance, key) not in options:
-            raise ValueError(f'Invalid setting {key}.')
+            raise ValueError(f'Neplatné nastavení {key}.')
     ranges = {
         'lambda_': (1, 1e12), 'p': (1e-6, 1 - 1e-6), 'iterations': (1, 100),
         'window': (3, 1001), 'poly_order': (0, 9), 'threshold': (0.1, 100),
@@ -91,45 +91,45 @@ def settings_from_dict(cls, data: dict):
     }
     for key, (low, high) in ranges.items():
         if hasattr(instance, key) and not low <= getattr(instance, key) <= high:
-            raise ValueError(f'Setting {key} must be between {low} and {high}.')
+            raise ValueError(f'Nastavení {key} musí být v rozmezí {low} až {high}.')
     if isinstance(instance, SmoothingSettings) and instance.poly_order >= instance.window:
-        raise ValueError('Polynomial order must be smaller than the smoothing window.')
+        raise ValueError('Řád polynomu musí být menší než okno vyhlazení.')
     if hasattr(instance, 'window') and instance.window % 2 == 0:
-        raise ValueError('Filter windows must be odd.')
+        raise ValueError('Okna filtrů musí být lichá.')
     if isinstance(instance, (PlotSettings, PeaksSettings)):
         pairs = [(instance.x_min, instance.x_max)]
         if isinstance(instance, PlotSettings):
             pairs.append((instance.y_min, instance.y_max))
         for lower, upper in pairs:
             if lower is not None and upper is not None and lower >= upper:
-                raise ValueError('Plot limits must be increasing.')
+                raise ValueError('Meze grafu musí být vzestupné.')
     return instance
 
 
 def _peak_from_dict(data: dict) -> Peak:
     if not isinstance(data, dict) or set(data) - {f.name for f in fields(Peak)}:
-        raise ValueError('Invalid peak record.')
+        raise ValueError('Neplatný záznam píku.')
     peak = Peak(**data)
     if not isinstance(peak.id, str) or not peak.id or len(peak.id) > 200:
-        raise ValueError('Invalid peak id.')
+        raise ValueError('Neplatné ID píku.')
     if not isinstance(peak.source, str) or not isinstance(peak.kind, str) or peak.source not in {'auto', 'manual'} or peak.kind not in {'max', 'min'}:
-        raise ValueError('Invalid peak source or polarity.')
+        raise ValueError('Neplatný zdroj nebo polarita píku.')
     for name in ('x', 'prominence', 'width'):
         value = getattr(peak, name)
         if value is None and name != 'x':
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError('Peak coordinates and properties must be finite.')
+            raise ValueError('Souřadnice a vlastnosti píku musí být konečné.')
     if peak.i is not None and (not isinstance(peak.i, int) or isinstance(peak.i, bool) or peak.i < 0):
-        raise ValueError('Invalid peak index.')
+        raise ValueError('Neplatný index píku.')
     if peak.label is not None and (not isinstance(peak.label, str) or len(peak.label) > 1000):
-        raise ValueError('Invalid peak label.')
+        raise ValueError('Neplatný popisek píku.')
     return peak
 
 
 def save_project(state, path) -> None:
     if len(state.spectra) > MAX_SPECTRA:
-        raise ValueError('Project supports at most 1000 spectra.')
+        raise ValueError('Projekt podporuje nejvýše 1 000 spekter.')
     settings = {key: asdict(getattr(state, attr)) for key, (attr, _) in SETTINGS.items()}
     for key, (_, cls) in SETTINGS.items():
         settings_from_dict(cls, settings[key])
@@ -142,7 +142,7 @@ def save_project(state, path) -> None:
         state._validated_metadata(state._original[spec.id]['meta'])
         total += len(spec.x) + len(state._original[spec.id]['x'])
         if total > MAX_TOTAL_POINTS:
-            raise ValueError('Project contains too many spectral points.')
+            raise ValueError('Projekt obsahuje příliš mnoho spektrálních bodů.')
         spectra.append({
             'id': spec.id, 'name': spec.name,
             'current': {'x': list(spec.x), 'y': list(state.displayed_y(spec.id)), 'meta': _safe_json(spec.meta)},
@@ -163,7 +163,7 @@ def save_project(state, path) -> None:
     # Serialize before opening a temporary file so invalid metadata never replaces a project.
     encoded = json.dumps(document, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
     if len(encoded.encode('utf-8')) > MAX_PROJECT_BYTES:
-        raise ValueError('Project exceeds the 256 MB limit.')
+        raise ValueError('Projekt překračuje limit 256 MB.')
     temporary = None
     try:
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=target.parent,
@@ -183,39 +183,39 @@ def load_project(state, path) -> None:
 
     target = Path(path)
     if target.stat().st_size > MAX_PROJECT_BYTES:
-        raise ValueError('Project exceeds the 256 MB limit.')
+        raise ValueError('Projekt překračuje limit 256 MB.')
     try:
         with target.open(encoding='utf-8') as handle:
-            document = json.load(handle, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Nonfinite JSON value.')))
+            document = json.load(handle, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Nekonečná nebo nečíselná hodnota JSON.')))
     except (json.JSONDecodeError, RecursionError) as error:
-        raise ValueError('Invalid SpecLab project JSON.') from error
+        raise ValueError('Neplatný JSON projektu SpecLab.') from error
     if not isinstance(document, dict) or document.get('schema') != SCHEMA or document.get('version') != VERSION:
-        raise ValueError('Unsupported SpecLab project schema or version.')
+        raise ValueError('Nepodporované schéma nebo verze projektu SpecLab.')
     if document.get('undo_persisted') is not False:
-        raise ValueError('Unsupported project undo format.')
+        raise ValueError('Nepodporovaný formát historie změn projektu.')
     entries = document.get('spectra')
     if not isinstance(entries, list) or len(entries) > MAX_SPECTRA:
-        raise ValueError('Invalid project spectrum list.')
+        raise ValueError('Neplatný seznam spekter projektu.')
     spectra, original, recipes, auto, manual, overlays = [], {}, {}, {}, {}, {}
     ids = set()
     total = 0
     for item in entries:
         if not isinstance(item, dict):
-            raise ValueError('Invalid project spectrum.')
+            raise ValueError('Neplatné spektrum projektu.')
         sid, name = item.get('id'), item.get('name')
         if not isinstance(sid, str) or not sid or len(sid) > 200 or sid in ids:
-            raise ValueError('Duplicate or invalid spectrum id.')
+            raise ValueError('Duplicitní nebo neplatné ID spektra.')
         if not isinstance(name, str) or len(name) > 1000:
-            raise ValueError('Invalid spectrum name.')
+            raise ValueError('Neplatný název spektra.')
         ids.add(sid)
         current, raw = item.get('current'), item.get('original')
         for data in (current, raw):
             if not isinstance(data, dict) or not isinstance(data.get('x'), list) or not isinstance(data.get('y'), list):
-                raise ValueError('Invalid project spectrum arrays.')
+                raise ValueError('Neplatná pole spektra projektu.')
             state._validate_data(data['x'], data['y'])
             total += len(data['x'])
             if total > MAX_TOTAL_POINTS:
-                raise ValueError('Project contains too many spectral points.')
+                raise ValueError('Projekt obsahuje příliš mnoho spektrálních bodů.')
             data['meta'] = state._validated_metadata(_safe_json(data.get('meta', {})))
         spectra.append(Spectrum(id=sid, name=name, x=list(current['x']), y=list(current['y']), meta=current['meta']))
         original[sid] = raw
@@ -223,34 +223,34 @@ def load_project(state, path) -> None:
         recipes[sid] = validate_operations(recipe) if recipe else []
         overlay = item.get('baseline_overlay', [])
         if not isinstance(overlay, list):
-            raise ValueError('Invalid baseline overlay.')
+            raise ValueError('Neplatné překrytí baseline.')
         if overlay:
             state._validate_data(current['x'], overlay)
             overlays[sid] = overlay
         for key, store in (('peaks_auto', auto), ('peaks_manual', manual)):
             peak_data = item.get(key, [])
             if not isinstance(peak_data, list) or len(peak_data) > 10000:
-                raise ValueError('Invalid project peak list.')
+                raise ValueError('Neplatný seznam píků projektu.')
             parsed = [_peak_from_dict(p) for p in peak_data]
             if any(p.source != ('auto' if key == 'peaks_auto' else 'manual') for p in parsed):
-                raise ValueError('Peak source does not match its project collection.')
+                raise ValueError('Zdroj píku neodpovídá jeho kolekci v projektu.')
             if any(p.i is not None and p.i >= len(current['x']) for p in parsed):
-                raise ValueError('Peak index exceeds current spectrum length.')
+                raise ValueError('Index píku překračuje délku aktuálního spektra.')
             store[sid] = parsed
     active = document.get('active_spectrum_id')
     if active is not None and active not in ids:
-        raise ValueError('Project selection refers to a missing spectrum.')
+        raise ValueError('Výběr projektu odkazuje na chybějící spektrum.')
     mode = document.get('spectral_mode', 'custom')
     if mode not in SPECTRAL_MODES:
-        raise ValueError('Unknown project spectral mode.')
+        raise ValueError('Neznámý spektrální režim projektu.')
     settings = document.get('settings', {})
     if not isinstance(settings, dict) or set(settings) - set(SETTINGS):
-        raise ValueError('Invalid project settings.')
+        raise ValueError('Neplatné nastavení projektu.')
     parsed_settings = {attr: settings_from_dict(cls, settings.get(key, {}))
                        for key, (attr, cls) in SETTINGS.items()}
     provenance = document.get('provenance', [])
     if not isinstance(provenance, list) or len(provenance) > 10000 or any(not isinstance(p, dict) for p in provenance):
-        raise ValueError('Invalid project provenance.')
+        raise ValueError('Neplatné záznamy historie projektu.')
     provenance = _safe_json(provenance)[-200:]
     # No signals or mutations happen above this point. Commit the fully validated file once.
     state._spectra, state._original, state._recipes = spectra, original, recipes

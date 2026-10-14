@@ -20,7 +20,7 @@ class SPCParseError(ValueError):
 def parse_spc_file(filepath: str) -> dict[str, Any]:
     blob = Path(filepath).read_bytes()
     if len(blob) < 544 or blob[1] not in (0x4B, 0x4C):
-        raise SPCParseError("Unsupported or truncated SPC header (only new-format 0x4B/0x4C is supported)")
+        raise SPCParseError("Nepodporovaná nebo zkrácená hlavička SPC (podporován je pouze nový formát 0x4B/0x4C)")
     endian = "<" if blob[1] == 0x4B else ">"
     flags, technique_code = blob[0], blob[2]
     exponent = struct.unpack_from("b", blob, 3)[0]
@@ -29,25 +29,25 @@ def parse_spc_file(filepath: str) -> dict[str, Any]:
     subfiles = struct.unpack_from(endian + "I", blob, 24)[0]
     xtype, ytype = blob[28], blob[29]
     if flags & (0x04 | 0x40) or subfiles != 1:
-        raise SPCParseError("SPC multifile/XYXY variants are unsupported; export each spectrum to CSV")
+        raise SPCParseError("Varianty SPC multifile/XYXY nejsou podporovány; exportuj každé spektrum do CSV")
     if exponent != -128:
-        raise SPCParseError("Integer-scaled SPC data is unsupported; export floating data or CSV")
+        raise SPCParseError("Celočíselně škálovaná data SPC nejsou podporována; exportuj data s plovoucí desetinnou čárkou nebo CSV")
     if points < 2 or points > len(blob) // 4 or not all(math.isfinite(value) for value in (first, last)):
-        raise SPCParseError("Invalid SPC point count or axis limits")
+        raise SPCParseError("Neplatný počet bodů nebo meze osy SPC")
     cursor = 512
     if flags & 0x80:
         if cursor + 4 * points + 32 > len(blob):
-            raise SPCParseError("Truncated SPC explicit X values")
+            raise SPCParseError("Explicitní hodnoty X SPC jsou zkrácené")
         x = list(struct.unpack_from(endian + f"{points}f", blob, cursor))
         cursor += points * 4
     else:
         x = [first + index * (last - first) / (points - 1) for index in range(points)]
     subpoints = struct.unpack_from(endian + "I", blob, cursor + 16)[0]
     if subpoints not in (0, points):
-        raise SPCParseError("SPC subfile point count disagrees with header")
+        raise SPCParseError("Počet bodů v podsouboru SPC neodpovídá hlavičce")
     cursor += 32
     if cursor + points * 4 > len(blob):
-        raise SPCParseError("Truncated SPC ordinate data")
+        raise SPCParseError("Data ordináty SPC jsou zkrácená")
     y = list(struct.unpack_from(endian + f"{points}f", blob, cursor))
     metadata = {"source_format": "spc", "source_vendor": "galactic", "name": Path(filepath).stem,
                 "x_unit": {1: "cm^-1", 2: "um", 3: "nm", 13: "cm^-1", 14: "eV"}.get(xtype, "unknown"),
@@ -64,5 +64,5 @@ def parse_spc_file(filepath: str) -> dict[str, Any]:
             metadata["y_title"] = labels[1].decode("latin-1")
             metadata["y_kind"] = "unknown"
     if ytype == 1:
-        raise SPCParseError("SPC interferograms are not supported as spectra")
+        raise SPCParseError("Interferogramy SPC nejsou podporovány jako spektra")
     return {"x": x, "y": y, "metadata": metadata}

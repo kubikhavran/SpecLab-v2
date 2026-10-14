@@ -52,7 +52,7 @@ class ProcessingTests(unittest.TestCase):
 
     def test_nonuniform_requires_resampling_and_grid_preserves_step(self):
         x = [0, 1, 2.1, 3, 4, 5]
-        with self.assertRaisesRegex(ProcessingError, 'Resample'):
+        with self.assertRaisesRegex(ProcessingError, 'převzorkuj'):
             run_operations(x, x, {}, [operation('derivative', window=5, poly_order=2)])
         result = run_operations(x, x, {}, [operation('resample', step=0.7),
                                          operation('smooth', window=5, poly_order=2)])
@@ -76,11 +76,11 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(uniform['details'][0]['sampling'], 'uniform')
         gap = np.r_[np.arange(0, 20.0), np.arange(100, 120.0)]
         for op in [operation('smooth', window=5), operation('baseline'), operation('despike', window=5)]:
-            with self.subTest(gap=op['op']), self.assertRaisesRegex(ProcessingError, 'gap'):
+            with self.subTest(gap=op['op']), self.assertRaisesRegex(ProcessingError, 'mezer'):
                 run_operations(gap, np.ones(40), {}, [op])
-        with self.assertRaisesRegex(ProcessingError, 'Resample'):
+        with self.assertRaisesRegex(ProcessingError, 'převzorkuj'):
             run_operations(x, y, {}, [operation('derivative', window=11, poly_order=3)])
-        with self.assertRaisesRegex(ProcessingError, 'gap'):
+        with self.assertRaisesRegex(ProcessingError, 'mezer'):
             run_operations([100.0, 101.0, 100000.0], [1.0, 2.0, 3.0], {},
                            [operation('smooth', window=3, poly_order=1)])
 

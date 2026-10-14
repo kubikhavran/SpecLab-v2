@@ -44,30 +44,30 @@ _INTEGER_PARAMS = {'iterations', 'window', 'poly_order', 'order', 'max_width'}
 
 def _number(value, name, low=-1e12, high=1e12, integer=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ProcessingError(f'{name} must be a finite number.')
+        raise ProcessingError(f'{name} musí být konečné číslo.')
     if integer and (not isinstance(value, int)):
-        raise ProcessingError(f'{name} must be an integer.')
+        raise ProcessingError(f'{name} musí být celé číslo.')
     if not low <= value <= high:
-        raise ProcessingError(f'{name} must be between {low:g} and {high:g}.')
+        raise ProcessingError(f'{name} musí být v rozmezí {low:g} až {high:g}.')
     if not math.isfinite(value):
-        raise ProcessingError(f'{name} must be a finite number.')
+        raise ProcessingError(f'{name} musí být konečné číslo.')
     return value
 
 
 def validate_operations(operations) -> list[dict]:
     """Validate the whitelist and parameters without executing the plan."""
     if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
-        raise ProcessingError('Provide between 1 and 100 processing operations.')
+        raise ProcessingError('Zadej 1 až 100 operací zpracování.')
     validated = []
     for item in operations:
         if not isinstance(item, dict) or set(item) - {'op', 'params'}:
-            raise ProcessingError('Each operation must contain only op and params.')
+            raise ProcessingError('Každá operace smí obsahovat pouze op a params.')
         op = item.get('op')
         if not isinstance(op, str) or op not in DEFAULTS:
-            raise ProcessingError(f'Unknown processing operation: {op!r}.')
+            raise ProcessingError(f'Neznámá operace zpracování: {op!r}.')
         given = item.get('params', {})
         if not isinstance(given, dict) or set(given) - set(DEFAULTS[op]):
-            raise ProcessingError(f'Unknown or invalid parameters for {op}.')
+            raise ProcessingError(f'Neznámé nebo neplatné parametry operace {op}.')
         p = copy.deepcopy({**DEFAULTS[op], **given})
         for key in _INTEGER_PARAMS & set(p):
             value = p[key]
@@ -80,30 +80,30 @@ def validate_operations(operations) -> list[dict]:
         if op in {'smooth', 'derivative', 'despike'}:
             _number(p['window'], 'window', 5 if op == 'despike' else 3, 1001, integer=True)
             if p['window'] % 2 == 0:
-                raise ProcessingError('Filter window must be odd.')
+                raise ProcessingError('Okno filtru musí být liché.')
         if op in {'smooth', 'derivative'}:
             _number(p['poly_order'], 'poly_order', 0, 9, integer=True)
             if p['poly_order'] >= p['window']:
-                raise ProcessingError('Polynomial order must be smaller than the window.')
+                raise ProcessingError('Řád polynomu musí být menší než okno.')
         if op == 'derivative':
             _number(p['order'], 'order', 1, 2, integer=True)
             if p['poly_order'] < p['order']:
-                raise ProcessingError('Polynomial order must be at least the derivative order.')
+                raise ProcessingError('Řád polynomu musí být alespoň tak vysoký jako řád derivace.')
         if op == 'despike':
             _number(p['threshold'], 'threshold', 0.1, 100)
             _number(p['max_width'], 'max_width', 1, 100, integer=True)
             _number(p['iterations'], 'iterations', 1, 100, integer=True)
             if not isinstance(p['positive_only'], bool):
-                raise ProcessingError('positive_only must be a boolean.')
+                raise ProcessingError('positive_only musí být logická hodnota.')
         if op == 'normalize' and (not isinstance(p['method'], str) or p['method'] not in {'max', 'vector', 'area', 'minmax'}):
-            raise ProcessingError('Unknown normalization method.')
+            raise ProcessingError('Neznámá metoda normalizace.')
         if op == 'convert_y' and (not isinstance(p['target'], str) or p['target'] not in {'absorbance', 'transmittance_percent', 'transmittance_fraction'}):
-            raise ProcessingError('Unknown conversion target.')
+            raise ProcessingError('Neznámý cíl převodu.')
         if op in {'crop', 'interpolate'}:
             _number(p['min'], 'min')
             _number(p['max'], 'max')
             if p['min'] >= p['max']:
-                raise ProcessingError('Range minimum must be smaller than maximum.')
+                raise ProcessingError('Minimum rozsahu musí být menší než maximum.')
         if op == 'resample':
             _number(p['step'], 'step', 1e-12, 1e12)
         if op == 'shift':
@@ -117,14 +117,14 @@ def _arrays(x, y):
     try:
         xa, ya = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
     except (TypeError, ValueError) as error:
-        raise ProcessingError('Spectrum must contain numeric arrays.') from error
+        raise ProcessingError('Spektrum musí obsahovat číselná pole.') from error
     if xa.ndim != 1 or ya.ndim != 1 or len(xa) != len(ya) or not 2 <= len(xa) <= MAX_POINTS:
-        raise ProcessingError('Spectrum requires equally sized X/Y arrays with 2–1,000,000 points.')
+        raise ProcessingError('Spektrum musí mít stejně dlouhá pole X/Y s 2 až 1 000 000 body.')
     if not np.all(np.isfinite(xa)) or not np.all(np.isfinite(ya)):
-        raise ProcessingError('Spectrum values must be finite.')
+        raise ProcessingError('Hodnoty spektra musí být konečné.')
     dx = np.diff(xa)
     if not (np.all(dx > 0) or np.all(dx < 0)):
-        raise ProcessingError('X values must be strictly increasing or decreasing.')
+        raise ProcessingError('Hodnoty X musí být přísně vzestupné nebo sestupné.')
     return xa.copy(), ya.copy()
 
 
@@ -141,7 +141,7 @@ def _is_uniform(x) -> bool:
 
 def _uniform_step(x):
     if not _is_uniform(x):
-        raise ProcessingError('This operation requires equally spaced X values. Resample the spectrum first.')
+        raise ProcessingError('Tato operace vyžaduje rovnoměrně rozložené hodnoty X. Nejprve spektrum převzorkuj.')
     return float(np.diff(x)[0])
 
 
@@ -156,8 +156,8 @@ def _point_domain_ready(x, detail):
     ratio = float(np.max(step) / typical)
     if ratio > MAX_INDEX_STEP_RATIO:
         raise ProcessingError(
-            f'X sampling contains a gap ({ratio:.1f}× the typical step). '
-            'Crop the gap or resample the spectrum first.')
+            f'V rozložení hodnot X je mezera ({ratio:.1f}× obvyklý krok). '
+            'Mezeru ořízni nebo spektrum nejprve převzorkuj.')
     detail['sampling'] = 'point_index'
     detail['max_step_ratio'] = ratio
 
@@ -169,7 +169,7 @@ def _filter_ready(x, window, detail=None):
         _point_domain_ready(x, detail)
         delta = None
     if window > len(x):
-        raise ProcessingError(f'Window {window} exceeds the {len(x)} available points; choose a smaller odd window.')
+        raise ProcessingError(f'Okno {window} přesahuje {len(x)} dostupných bodů; zvol menší liché okno.')
     return delta
 
 
@@ -183,10 +183,10 @@ def _derived(meta, op, unit='a.u.'):
 def _interpolate(x, y, mask):
     good = ~mask
     if np.count_nonzero(good) < 2:
-        raise ProcessingError('Interpolation must leave at least two unmodified points.')
+        raise ProcessingError('Po interpolaci musí zůstat alespoň dva nezměněné body.')
     # Both ends must be supported; silently extrapolating an edge spike is unsafe.
     if mask[0] or mask[-1]:
-        raise ProcessingError('Interpolation range must have an unmodified neighbour on both sides.')
+        raise ProcessingError('Rozsah interpolace musí mít z obou stran nezměněného souseda.')
     ascending = x[-1] > x[0]
     xp, yp = (x[good], y[good]) if ascending else (x[good][::-1], y[good][::-1])
     result = y.copy()
@@ -226,7 +226,7 @@ def run_operations(x, y, meta, operations) -> dict:
     operations = validate_operations(operations)
     x, y = _arrays(x, y)
     if not isinstance(meta, dict):
-        raise ProcessingError('Spectrum metadata must be an object.')
+        raise ProcessingError('Metadata spektra musí být objekt.')
     meta = copy.deepcopy(meta)
     details = []
     for item in operations:
@@ -236,7 +236,7 @@ def run_operations(x, y, meta, operations) -> dict:
             # AsLS penalises second differences between neighbouring points.
             _point_domain_ready(x, detail)
             if len(x) < 3:
-                raise ProcessingError('Baseline correction needs at least three points.')
+                raise ProcessingError('Korekce baseline vyžaduje alespoň tři body.')
             baseline = asls_baseline(y, lam=p['lam'], p=p['p'], n_iter=p['iterations'])
             y = y - baseline
             detail['baseline'] = baseline.tolist()
@@ -262,7 +262,7 @@ def run_operations(x, y, meta, operations) -> dict:
             else:
                 divisor = float(np.max(np.abs(y)))
             if not np.isfinite(divisor) or divisor <= 0:
-                raise ProcessingError('Normalization requires a finite, nonzero divisor.')
+                raise ProcessingError('Normalizace vyžaduje konečný, nenulový dělitel.')
             y = y / divisor
             detail['divisor'] = divisor
             _derived(meta, f'normalize:{method}')
@@ -276,9 +276,9 @@ def run_operations(x, y, meta, operations) -> dict:
             source, target = meta.get('y_kind'), p['target']
             known = {'absorbance', 'transmittance_percent', 'transmittance_fraction'}
             if not isinstance(source, str) or source not in known:
-                raise ProcessingError('Set a known absorbance or transmittance ordinate type before conversion.')
+                raise ProcessingError('Před převodem nastav známý typ ordináty: absorbanci nebo transmitanci.')
             if source.startswith('transmittance') and np.any(y <= 0):
-                raise ProcessingError('Transmittance must be strictly positive for logarithmic conversion.')
+                raise ProcessingError('Transmitance musí být pro logaritmický převod přísně kladná.')
             with np.errstate(over='ignore', under='ignore', invalid='ignore', divide='ignore'):
                 if source == target:
                     converted = y.copy()
@@ -288,23 +288,23 @@ def run_operations(x, y, meta, operations) -> dict:
                     converted = -np.log10(fraction) if target == 'absorbance' else (
                         fraction * 100.0 if target == 'transmittance_percent' else fraction)
                 if not np.all(np.isfinite(converted)) or (target.startswith('transmittance') and np.any(converted <= 0)):
-                    raise ProcessingError('Conversion exceeds finite positive transmittance limits.')
+                    raise ProcessingError('Výsledek převodu překračuje konečné kladné hodnoty transmitance.')
             y = converted
             meta['y_kind'] = target
             meta['y_unit'] = '%' if target == 'transmittance_percent' else ('fraction' if target == 'transmittance_fraction' else 'AU')
         elif op == 'crop':
             mask = (x >= p['min']) & (x <= p['max'])
             if np.count_nonzero(mask) < 2:
-                raise ProcessingError('Crop must retain at least two points.')
+                raise ProcessingError('Po oříznutí musí zůstat alespoň dva body.')
             x, y = x[mask], y[mask]
         elif op == 'resample':
             span = abs(float(x[-1] - x[0]))
             ratio = span / p['step']
             if not np.isfinite(ratio) or ratio + 1 > MAX_POINTS:
-                raise ProcessingError('Resampling exceeds the 1,000,000-point limit.')
+                raise ProcessingError('Převzorkování překračuje limit 1 000 000 bodů.')
             count = int(np.floor(ratio + min(1e-10, ratio * 1e-12))) + 1
             if count < 2:
-                raise ProcessingError('Resampling step must retain at least two points.')
+                raise ProcessingError('Krok převzorkování musí zachovat alespoň dva body.')
             direction = 1 if x[-1] > x[0] else -1
             sampled = x[0] + direction * p['step'] * np.arange(count)
             # Floating arithmetic can put the final grid point barely outside its source.
@@ -320,11 +320,11 @@ def run_operations(x, y, meta, operations) -> dict:
         elif op == 'interpolate':
             mask = (x >= p['min']) & (x <= p['max'])
             if not np.any(mask):
-                raise ProcessingError('Interpolation range contains no points.')
+                raise ProcessingError('Rozsah interpolace neobsahuje žádné body.')
             y = _interpolate(x, y, mask)
             detail['removed_count'] = int(np.count_nonzero(mask))
         if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
-            raise ProcessingError(f'{op} produced nonfinite data.')
+            raise ProcessingError(f'Operace {op} vytvořila nekonečná nebo nečíselná data.')
         x, y = _arrays(x, y)
         details.append(detail)
     return {'x': x.tolist(), 'y': y.tolist(), 'meta': meta, 'details': details}

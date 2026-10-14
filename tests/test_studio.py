@@ -126,3 +126,13 @@ def test_history_is_shown_in_czech_and_imports_are_undoable():
     assert window.history_list.item(0).text() == "↶ Zpět: Import spekter · ručně"
     window._dirty = False
     window.close()
+
+
+def test_text_tables_are_named_by_file_and_column():
+    from app.main_window import spectrum_display_name
+
+    single = {"name": "Intensity", "column_index": 1}
+    assert spectrum_display_name("/data/sample_A.csv", single, 0, 1) == "sample_A"
+    assert spectrum_display_name("/data/series.csv", {"name": "500 mV", "column_index": 2}, 1, 3) == "series · 500 mV"
+    assert spectrum_display_name("/data/map.wdf", {"name": "Map [3]"}, 2, 88) == "Map [3] · 3"
+    assert spectrum_display_name("/data/one.spa", {"name": "Polystyrene"}, 0, 1) == "Polystyrene"

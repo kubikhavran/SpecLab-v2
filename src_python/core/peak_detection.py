@@ -54,15 +54,15 @@ def detect_peaks(
     xa = np.asarray(x, dtype=np.float64)
     ya = np.asarray(y, dtype=np.float64)
     if xa.ndim != 1 or ya.ndim != 1 or len(xa) != len(ya):
-        raise ValueError('Peak detection requires equally sized one-dimensional X/Y arrays.')
+        raise ValueError('Detekce píků vyžaduje stejně dlouhá jednorozměrná pole X/Y.')
     if not np.all(np.isfinite(xa)) or not np.all(np.isfinite(ya)):
-        raise ValueError('Peak detection requires finite data.')
+        raise ValueError('Detekce píků vyžaduje konečná data.')
     if polarity not in {'max', 'min', 'both'}:
-        raise ValueError('Unknown peak polarity.')
+        raise ValueError('Neznámá polarita píku.')
     if not np.isfinite(min_prominence) or min_prominence < 0 or not np.isfinite(min_distance_x) or min_distance_x < 0:
-        raise ValueError('Peak prominence and distance must be finite and nonnegative.')
+        raise ValueError('Prominence a vzdálenost píků musí být konečné a nezáporné.')
     if isinstance(max_peaks, bool) or not isinstance(max_peaks, int) or not 1 <= max_peaks <= 10000:
-        raise ValueError('Maximum peak count must be an integer between 1 and 10000.')
+        raise ValueError('Maximální počet píků musí být celé číslo v rozmezí 1 až 10 000.')
     n = len(xa)
     if n < 3:
         return []

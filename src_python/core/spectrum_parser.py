@@ -43,15 +43,15 @@ def _normalize(parsed: ParsedSpectrumData) -> ParsedSpectrumData:
         x = np.asarray(parsed.x, dtype=np.float64)
         y = np.asarray(parsed.y, dtype=np.float64)
     except (TypeError, ValueError) as exc:
-        raise SpectrumParseError("Spectrum contains non-numeric values") from exc
+        raise SpectrumParseError("Spektrum obsahuje nečíselné hodnoty") from exc
     if x.ndim != 1 or y.ndim != 1 or x.size != y.size or x.size < 2:
-        raise SpectrumParseError("A spectrum requires at least two matching X/Y points")
+        raise SpectrumParseError("Spektrum musí obsahovat alespoň dva odpovídající body X/Y")
     if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
-        raise SpectrumParseError("Spectrum contains NaN or infinite values")
+        raise SpectrumParseError("Spektrum obsahuje hodnoty NaN nebo nekonečno")
     order = np.argsort(x, kind="stable")
     x, y = x[order], y[order]
     if np.any(np.diff(x) == 0):
-        raise SpectrumParseError("Duplicate X coordinates: choose or consolidate measurements before import")
+        raise SpectrumParseError("Duplicitní souřadnice X: před importem vyber nebo sjednoť měření")
     parsed.x, parsed.y = x.tolist(), y.tolist()
     parsed.metadata.setdefault("point_count", int(x.size))
     if "technique" in parsed.metadata:
@@ -72,7 +72,7 @@ def _split(line: str, delimiter: str) -> List[str]:
     try:
         return next(csv.reader([line], delimiter=delimiter, strict=True))
     except csv.Error as exc:
-        raise SpectrumParseError(f"Invalid quoted CSV row: {exc}") from exc
+        raise SpectrumParseError(f"Neplatný řádek CSV s uvozovkami: {exc}") from exc
 
 
 def _number(value: str, delimiter: str) -> float:
@@ -81,7 +81,7 @@ def _number(value: str, delimiter: str) -> float:
         value = value.replace(",", ".")
     result = float(value)
     if not math.isfinite(result):
-        raise ValueError("non-finite value")
+        raise ValueError("nekonečná nebo nečíselná hodnota")
     return result
 
 
@@ -109,7 +109,7 @@ def _detect_delimiter(lines: List[str]) -> str:
             if best is None or score > best[0]:
                 best = (score, delimiter, count)
     if best is None:
-        raise SpectrumParseError("No numeric X/Y table found; check the delimiter and decimal separator")
+        raise SpectrumParseError("Nebyla nalezena číselná tabulka X/Y; zkontroluj oddělovač a desetinný znak")
     return best[1]
 
 
@@ -153,21 +153,21 @@ def _parse_text_curves(text: str) -> List[ParsedSpectrumData]:
             values = [_number(value, delimiter) for value in parts]
         except ValueError as exc:
             if data or _NUMBER_START.match(line.lstrip('"')):
-                raise SpectrumParseError(f"Invalid or missing numeric value on line {line_number}") from exc
+                raise SpectrumParseError(f"Neplatná nebo chybějící číselná hodnota na řádku {line_number}") from exc
             if len(parts) >= 2:
                 header = [value.strip() for value in parts]
             continue
         if len(values) < 2:
             if data:
-                raise SpectrumParseError(f"Expected X and Y columns on line {line_number}")
+                raise SpectrumParseError(f"Na řádku {line_number} se očekávají sloupce X a Y")
             continue
         if data and len(values) != len(data[0]):
-            raise SpectrumParseError(f"Inconsistent column count on line {line_number}")
+            raise SpectrumParseError(f"Nekonzistentní počet sloupců na řádku {line_number}")
         data.append(values)
     if len(data) < 2:
-        raise SpectrumParseError("Spectrum contains fewer than two data rows")
+        raise SpectrumParseError("Spektrum obsahuje méně než dva řádky dat")
     if header and len(header) != len(data[0]):
-        raise SpectrumParseError("Column headings do not match the numeric table")
+        raise SpectrumParseError("Záhlaví sloupců neodpovídá číselné tabulce")
     columns = list(zip(*data))
     results = []
     for column, values in enumerate(columns[1:], 1):
@@ -191,14 +191,14 @@ def parse_spectrum_text(text: str) -> Optional[Tuple[List[float], List[float]]]:
 def _read_text(path: Path) -> str:
     blob = path.read_bytes()
     if b"\x00" in blob and not blob.startswith((b"\xff\xfe", b"\xfe\xff")):
-        raise SpectrumParseError("Binary data cannot be read as a text spectrum")
+        raise SpectrumParseError("Binární data nelze načíst jako textové spektrum")
     encodings = ("utf-16",) if blob.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "cp1250")
     for encoding in encodings:
         try:
             return blob.decode(encoding)
         except UnicodeDecodeError:
             continue
-    raise SpectrumParseError("Unrecognized text encoding")
+    raise SpectrumParseError("Nerozpoznané kódování textu")
 
 
 def parse_spectrum_files(filepath: str) -> List[ParsedSpectrumData]:
@@ -227,7 +227,7 @@ def parse_spectrum_files(filepath: str) -> List[ParsedSpectrumData]:
         elif extension in _TEXT_EXTENSIONS:
             results = _parse_text_curves(_read_text(path))
         else:
-            raise SpectrumParseError(f"Unsupported format '{extension or '(no extension)'}'; export to CSV/TXT or JCAMP-DX")
+            raise SpectrumParseError(f"Nepodporovaný formát '{extension or '(no extension)'}'; exportuj soubor do CSV/TXT nebo JCAMP-DX")
     except (OSError, ValueError, SPAParseError) as exc:
         raise SpectrumParseError(str(exc)) from exc
     for index, item in enumerate(results):
@@ -238,7 +238,7 @@ def parse_spectrum_files(filepath: str) -> List[ParsedSpectrumData]:
         item.metadata.setdefault("spectrum_index", index)
         _normalize(item)
     if not results:
-        raise SpectrumParseError("File contains no collected spectra")
+        raise SpectrumParseError("Soubor neobsahuje žádná naměřená spektra")
     return results
 
 
@@ -246,7 +246,7 @@ def parse_spectrum_file(filepath: str) -> Optional[ParsedSpectrumData]:
     """Legacy single-spectrum API; reject multi-spectrum files to prevent data loss."""
     results = parse_spectrum_files(filepath)
     if len(results) != 1:
-        raise SpectrumParseError("File contains several spectra; use parse_spectrum_files to import all of them")
+        raise SpectrumParseError("Soubor obsahuje několik spekter; pro import všech použij parse_spectrum_files")
     return results[0]
 
 

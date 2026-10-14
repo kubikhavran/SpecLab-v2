@@ -44,7 +44,7 @@ class StateTests(unittest.TestCase):
             self.state.apply_preview(proposal)
         proposal = self.state.preview_operations([op('shift', y=1)])
         self.spec.y[0] = 2  # Legacy direct mutations are also detected by the data fingerprint.
-        with self.assertRaisesRegex(ValueError, 'changed'):
+        with self.assertRaisesRegex(ValueError, 'změnilo'):
             self.state.apply_preview(proposal)
         proposal = self.state.preview_operations([op('normalize')])
         self.state.update_spectrum_metadata(self.spec.id, y_kind='intensity')
