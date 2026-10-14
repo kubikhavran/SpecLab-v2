@@ -53,13 +53,36 @@ class ProcessingTests(unittest.TestCase):
     def test_nonuniform_requires_resampling_and_grid_preserves_step(self):
         x = [0, 1, 2.1, 3, 4, 5]
         with self.assertRaisesRegex(ProcessingError, 'Resample'):
-            run_operations(x, x, {}, [operation('smooth', window=5, poly_order=2)])
+            run_operations(x, x, {}, [operation('derivative', window=5, poly_order=2)])
         result = run_operations(x, x, {}, [operation('resample', step=0.7),
                                          operation('smooth', window=5, poly_order=2)])
         np.testing.assert_allclose(np.diff(result['x']), 0.7)
         np.testing.assert_allclose(result['x'], result['y'], atol=1e-10)
         descending = run_operations(x[::-1], x[::-1], {}, [operation('resample', step=0.7)])
         np.testing.assert_allclose(np.diff(descending['x']), -0.7)
+
+    def test_detector_axis_allows_point_filters_but_not_gaps(self):
+        # Raman CCD axes are monotonic with a slowly changing step.
+        x = np.cumsum(np.linspace(1.49, 1.68, 200))
+        y = np.sin(x / 20) + 0.01 * np.cos(x * 7)
+        y[100] += 50
+        for op in [operation('smooth', window=11, poly_order=3), operation('baseline'),
+                   operation('despike', window=11)]:
+            with self.subTest(op=op['op']):
+                result = run_operations(x, y, {}, [op])
+                self.assertEqual(result['details'][0]['sampling'], 'point_index')
+                self.assertTrue(np.all(np.isfinite(result['y'])))
+        uniform = run_operations(np.arange(20.0), np.ones(20), {}, [operation('smooth', window=5)])
+        self.assertEqual(uniform['details'][0]['sampling'], 'uniform')
+        gap = np.r_[np.arange(0, 20.0), np.arange(100, 120.0)]
+        for op in [operation('smooth', window=5), operation('baseline'), operation('despike', window=5)]:
+            with self.subTest(gap=op['op']), self.assertRaisesRegex(ProcessingError, 'gap'):
+                run_operations(gap, np.ones(40), {}, [op])
+        with self.assertRaisesRegex(ProcessingError, 'Resample'):
+            run_operations(x, y, {}, [operation('derivative', window=11, poly_order=3)])
+        with self.assertRaisesRegex(ProcessingError, 'gap'):
+            run_operations([100.0, 101.0, 100000.0], [1.0, 2.0, 3.0], {},
+                           [operation('smooth', window=3, poly_order=1)])
 
     def test_invalid_parameters_and_data_are_rejected(self):
         invalid = [operation('exec'), operation('smooth', window=4),

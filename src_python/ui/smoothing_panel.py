@@ -36,7 +36,7 @@ class SmoothingPanel(QWidget):
 
         # Window slider (odd values 5–51)
         win_row = QHBoxLayout()
-        win_row.addWidget(QLabel("Window:"))
+        win_row.addWidget(QLabel("Okno:"))
         self._win_label = QLabel("11")
         win_row.addStretch()
         win_row.addWidget(self._win_label)
@@ -52,7 +52,7 @@ class SmoothingPanel(QWidget):
 
         # Poly order slider (1–5)
         poly_row = QHBoxLayout()
-        poly_row.addWidget(QLabel("Poly order:"))
+        poly_row.addWidget(QLabel("Řád polynomu:"))
         self._poly_label = QLabel("3")
         poly_row.addStretch()
         poly_row.addWidget(self._poly_label)
@@ -67,15 +67,15 @@ class SmoothingPanel(QWidget):
 
         # Buttons
         btn_row1 = QHBoxLayout()
-        self._btn_apply = QPushButton("Apply smoothing")
-        self._btn_reset = QPushButton("Reset smoothing")
+        self._btn_apply = QPushButton("Použít vyhlazení")
+        self._btn_reset = QPushButton("Vrátit vyhlazení")
         btn_row1.addWidget(self._btn_apply)
         btn_row1.addWidget(self._btn_reset)
         layout.addLayout(btn_row1)
 
         btn_row2 = QHBoxLayout()
-        self._btn_apply_all = QPushButton("Apply ALL")
-        self._btn_reset_all = QPushButton("Reset ALL")
+        self._btn_apply_all = QPushButton("Použít na vše")
+        self._btn_reset_all = QPushButton("Vrátit u všech")
         btn_row2.addWidget(self._btn_apply_all)
         btn_row2.addWidget(self._btn_reset_all)
         layout.addLayout(btn_row2)
@@ -131,7 +131,7 @@ class SmoothingPanel(QWidget):
             proposal = self._state.preview_operations([self._operation()], ids)
             self._state.apply_preview(proposal)
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be applied", str(error))
+            QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
     def _reset(self, ids: list[str]) -> None:
         if not ids:
@@ -139,7 +139,7 @@ class SmoothingPanel(QWidget):
         try:
             self._state.reset_operation('smooth', ids)
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be reset", str(error))
+            QMessageBox.warning(self, "Zpracování nelze vrátit", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum

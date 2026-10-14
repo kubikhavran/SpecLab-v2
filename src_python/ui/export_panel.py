@@ -157,63 +157,63 @@ class ExportPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(QLabel('Output name'))
+        layout.addWidget(QLabel('Název výstupu'))
         self._filename = QLineEdit()
-        self._filename.setPlaceholderText('Use the spectrum name')
+        self._filename.setPlaceholderText('Použít název spektra')
         self._filename.editingFinished.connect(lambda: self._state.set_export(filename=self._filename.text()))
         layout.addWidget(self._filename)
         folder_row = QHBoxLayout()
         self._folder_edit = QLineEdit()
         self._folder_edit.setReadOnly(True)
-        self._folder_edit.setPlaceholderText('Ask where to save')
-        choose = QPushButton('Choose folder…')
+        self._folder_edit.setPlaceholderText('Zvolte složku pro uložení')
+        choose = QPushButton('Vybrat složku…')
         choose.clicked.connect(self._on_choose_folder)
-        clear = QPushButton('Reset')
+        clear = QPushButton('Vymazat')
         clear.clicked.connect(lambda: self._state.set_export(folder=''))
         folder_row.addWidget(self._folder_edit, 1)
         folder_row.addWidget(choose)
         folder_row.addWidget(clear)
         layout.addLayout(folder_row)
 
-        group = QGroupBox('Figure')
+        group = QGroupBox('Graf')
         inner = QVBoxLayout(group)
-        self._chk_transparent = QCheckBox('Transparent background (PNG / SVG)')
+        self._chk_transparent = QCheckBox('Průhledné pozadí (PNG / SVG)')
         inner.addWidget(self._chk_transparent)
         self._button_row(inner, [('PNG', lambda: self._export_image('png')),
                                  ('SVG', lambda: self._export_image('svg')),
                                  ('PDF', lambda: self._export_image('pdf'))])
-        self._img_info = QLabel('Canvas size is set in Appearance.')
+        self._img_info = QLabel('Rozměry plátna se nastavují v části Vzhled.')
         self._img_info.setWordWrap(True)
         inner.addWidget(self._img_info)
         layout.addWidget(group)
 
-        group = QGroupBox('Spectrum data')
+        group = QGroupBox('Data spektra')
         inner = QVBoxLayout(group)
         self._data_version = QComboBox()
-        self._data_version.addItem('Current processed data', False)
-        self._data_version.addItem('Imported original data', True)
+        self._data_version.addItem('Aktuální zpracovaná data', False)
+        self._data_version.addItem('Importovaná původní data', True)
         inner.addWidget(self._data_version)
-        self._chk_decimal_comma = QCheckBox('Decimal comma (CZ)')
+        self._chk_decimal_comma = QCheckBox('Desetinná čárka (CZ)')
         inner.addWidget(self._chk_decimal_comma)
-        self._button_row(inner, [('Active CSV', lambda: self._export_data(';')),
-                                 ('Active TSV', lambda: self._export_data('\t'))])
-        self._button_row(inner, [('All CSV files', lambda: self._export_all_data(';')),
-                                 ('All TSV files', lambda: self._export_all_data('\t'))])
-        self._button_row(inner, [('All CSV → ZIP', lambda: self._export_zip(';')),
-                                 ('All TSV → ZIP', lambda: self._export_zip('\t'))])
-        self._data_info = QLabel('Data retain full numeric precision.')
+        self._button_row(inner, [('Aktivní CSV', lambda: self._export_data(';')),
+                                 ('Aktivní TSV', lambda: self._export_data('\t'))])
+        self._button_row(inner, [('Všechna CSV', lambda: self._export_all_data(';')),
+                                 ('Všechna TSV', lambda: self._export_all_data('\t'))])
+        self._button_row(inner, [('Všechna CSV → ZIP', lambda: self._export_zip(';')),
+                                 ('Všechna TSV → ZIP', lambda: self._export_zip('\t'))])
+        self._data_info = QLabel('Data zachovávají plnou číselnou přesnost.')
         self._data_info.setWordWrap(True)
         inner.addWidget(self._data_info)
         layout.addWidget(group)
 
-        group = QGroupBox('Peak table')
+        group = QGroupBox('Tabulka píků')
         inner = QVBoxLayout(group)
         self._peak_scope = QComboBox()
-        self._peak_scope.addItem('Active spectrum', 'active')
-        self._peak_scope.addItem('All spectra', 'all')
+        self._peak_scope.addItem('Aktivní spektrum', 'active')
+        self._peak_scope.addItem('Všechna spektra', 'all')
         inner.addWidget(self._peak_scope)
-        self._button_row(inner, [('Peaks CSV', lambda: self._export_peaks(';')),
-                                 ('Peaks TSV', lambda: self._export_peaks('\t'))])
+        self._button_row(inner, [('Píky CSV', lambda: self._export_peaks(';')),
+                                 ('Píky TSV', lambda: self._export_peaks('\t'))])
         layout.addWidget(group)
 
     def _sync_from_state(self):
@@ -225,7 +225,7 @@ class ExportPanel(QWidget):
 
     def _on_choose_folder(self):
         start = self._state.export_settings.folder or self._state.last_folder('image')
-        folder = QFileDialog.getExistingDirectory(self, 'Choose export folder', start)
+        folder = QFileDialog.getExistingDirectory(self, 'Vybrat složku pro export', start)
         if folder:
             self._state.set_export(folder=folder)
             self._state.set_last_folder(folder, 'image')
@@ -245,8 +245,8 @@ class ExportPanel(QWidget):
                 suffix += 1
             return str(path)
         start = str(Path(self._state.last_folder(context)) / f'{base}.{extension}')
-        path, _ = QFileDialog.getSaveFileName(self, f'Save {extension.upper()}', start,
-                                             f'{extension.upper()} files (*.{extension})')
+        path, _ = QFileDialog.getSaveFileName(self, f'Uložit {extension.upper()}', start,
+                                             f'Soubory {extension.upper()} (*.{extension})')
         if not path:
             return None
         if Path(path).suffix.lower() != f'.{extension}':
@@ -257,13 +257,13 @@ class ExportPanel(QWidget):
     def _export_image(self, fmt):
         wrapper = self._get_plot_widget() if self._get_plot_widget else None
         if wrapper is None:
-            self._img_info.setText('Plot is unavailable.')
+            self._img_info.setText('Graf není dostupný.')
             return
         hidden = []
         try:
             width, height = int(self._state.graphics.export_width), int(self._state.graphics.export_height)
             if not (300 <= width <= 8000 and 300 <= height <= 8000):
-                raise ValueError('Canvas width and height must be between 300 and 8000 pixels.')
+                raise ValueError('Šířka a výška plátna musí být v rozmezí 300 až 8000 pixelů.')
             path = self._output_path(self._get_base_name(), fmt, 'image')
             if not path:
                 return
@@ -279,9 +279,9 @@ class ExportPanel(QWidget):
                 self._export_svg(wrapper._plot_item, path, width, height, transparent)
             else:
                 self._export_pdf(wrapper._plot_item, path, width, height)
-            self._img_info.setText(f'Saved {Path(path).name} · {width} × {height}')
+            self._img_info.setText(f'Uloženo: {Path(path).name} · {width} × {height}')
         except (OSError, ValueError, RuntimeError) as exc:
-            self._img_info.setText(f'Export failed: {exc}')
+            self._img_info.setText(f'Export se nezdařil: {exc}')
         finally:
             for item, visible in hidden:
                 item.setVisible(visible)
@@ -289,7 +289,7 @@ class ExportPanel(QWidget):
     @staticmethod
     def _render(plot_item, painter, width, height, transparent=False):
         if not painter.isActive():
-            raise OSError('The output painter could not be opened.')
+            raise OSError('Výstupní kreslicí zařízení nelze otevřít.')
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         target = QRectF(0, 0, width, height)
@@ -297,13 +297,13 @@ class ExportPanel(QWidget):
             painter.fillRect(target, QColor('white'))
         bounds = plot_item.sceneBoundingRect()
         if not bounds.isValid() or bounds.isEmpty():
-            raise ValueError('The plot has no drawable area.')
+            raise ValueError('Graf nemá vykreslitelnou plochu.')
         plot_item.scene().render(painter, target, bounds)
 
     def _export_png(self, plot_item, path, width, height, transparent=False):
         image = QImage(QSize(width, height), QImage.Format.Format_ARGB32)
         if image.isNull():
-            raise OSError('The requested image could not be allocated.')
+            raise OSError('Požadovaný obrázek nelze vytvořit.')
         image.fill(QColor(0, 0, 0, 0) if transparent else QColor('white'))
         painter = QPainter(image)
         try:
@@ -311,7 +311,7 @@ class ExportPanel(QWidget):
         finally:
             painter.end()
         if not image.save(path, 'PNG'):
-            raise OSError('PNG could not be written to the selected path.')
+            raise OSError('Soubor PNG nelze uložit do vybrané cesty.')
 
     def _export_svg(self, plot_item, path, width, height, transparent=False):
         generator = QSvgGenerator()
@@ -325,7 +325,7 @@ class ExportPanel(QWidget):
         finally:
             painter.end()
         if not Path(path).is_file() or not Path(path).stat().st_size:
-            raise OSError('SVG could not be written.')
+            raise OSError('Soubor SVG se nepodařilo uložit.')
 
     def _export_pdf(self, plot_item, path, width, height):
         writer = QPdfWriter(path)
@@ -338,7 +338,7 @@ class ExportPanel(QWidget):
         finally:
             painter.end()
         if not Path(path).is_file() or not Path(path).stat().st_size:
-            raise OSError('PDF could not be written.')
+            raise OSError('Soubor PDF se nepodařilo uložit.')
 
     def _spectrum_to_text(self, spec, delimiter):
         return spectrum_to_text(self._state, spec, delimiter, self._chk_decimal_comma.isChecked(),
@@ -347,25 +347,25 @@ class ExportPanel(QWidget):
     def _export_data(self, delimiter):
         spec = self._state.active_spectrum
         if spec is None:
-            self._data_info.setText('Select a spectrum first.')
+            self._data_info.setText('Nejprve vyberte spektrum.')
             return
         try:
             text = self._spectrum_to_text(spec, delimiter)
             path = self._output_path(self._get_base_name(), 'csv' if delimiter == ';' else 'tsv', 'data')
             if path:
                 Path(path).write_text(text, encoding='utf-8')
-                self._data_info.setText(f'Saved {Path(path).name}')
+                self._data_info.setText(f'Uloženo: {Path(path).name}')
         except (OSError, ValueError) as exc:
-            self._data_info.setText(f'Export failed: {exc}')
+            self._data_info.setText(f'Export se nezdařil: {exc}')
 
     def _export_all_data(self, delimiter):
         spectra = self._state.spectra
         if not spectra:
-            self._data_info.setText('Load spectra first.')
+            self._data_info.setText('Nejprve načtěte spektra.')
             return
         folder = self._state.export_settings.folder
         if not folder or not Path(folder).is_dir():
-            folder = QFileDialog.getExistingDirectory(self, 'Export all spectra', self._state.last_folder('data_all'))
+            folder = QFileDialog.getExistingDirectory(self, 'Exportovat všechna spektra', self._state.last_folder('data_all'))
         if not folder:
             return
         self._state.set_last_folder(folder, 'data_all')
@@ -380,34 +380,34 @@ class ExportPanel(QWidget):
                     path = Path(folder) / f'{base}_{suffix}.{extension}'
                     suffix += 1
                 path.write_text(text, encoding='utf-8')
-            self._data_info.setText(f'Saved {len(entries)} spectra to {folder}')
+            self._data_info.setText(f'Uloženo spekter: {len(entries)} · {folder}')
         except (OSError, ValueError) as exc:
-            self._data_info.setText(f'Export failed: {exc}')
+            self._data_info.setText(f'Export se nezdařil: {exc}')
 
     def _export_zip(self, delimiter):
         if not self._state.spectra:
-            self._data_info.setText('Load spectra first.')
+            self._data_info.setText('Nejprve načtěte spektra.')
             return
         try:
             path = self._output_path(self._get_base_name('spectra') + '-all', 'zip', 'data_all')
             if path:
                 write_spectra_zip(self._state, self._state.spectra, path, delimiter,
                                   self._chk_decimal_comma.isChecked(), bool(self._data_version.currentData()))
-                self._data_info.setText(f'Saved {len(self._state.spectra)} spectra in {Path(path).name}')
+                self._data_info.setText(f'Uloženo spekter: {len(self._state.spectra)} · {Path(path).name}')
         except (OSError, ValueError) as exc:
-            self._data_info.setText(f'Export failed: {exc}')
+            self._data_info.setText(f'Export se nezdařil: {exc}')
 
     def _export_peaks(self, delimiter):
         spectra = self._state.spectra if self._peak_scope.currentData() == 'all' else [self._state.active_spectrum]
         spectra = [spec for spec in spectra if spec is not None]
         if not any(self._state.peaks_auto.get(s.id) or self._state.peaks_manual.get(s.id) for s in spectra):
-            self._data_info.setText('No peaks to export.')
+            self._data_info.setText('Žádné píky k exportu.')
             return
         try:
             text = peaks_to_text(self._state, spectra, delimiter, self._chk_decimal_comma.isChecked())
             path = self._output_path(self._get_base_name('peaks') + '-peaks', 'csv' if delimiter == ';' else 'tsv', 'peaks')
             if path:
                 Path(path).write_text(text, encoding='utf-8')
-                self._data_info.setText(f'Saved {Path(path).name}')
+                self._data_info.setText(f'Uloženo: {Path(path).name}')
         except (OSError, ValueError) as exc:
-            self._data_info.setText(f'Export failed: {exc}')
+            self._data_info.setText(f'Export se nezdařil: {exc}')

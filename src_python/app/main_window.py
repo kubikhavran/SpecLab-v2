@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QSizePolicy,
 )
-from app.models import Peak, Spectrum
+from app.models import AXIS_Y_LABELS, Peak, Spectrum
 from app.state import AppState
 from core.project_io import load_project, save_project
 from core.spectrum_parser import (
@@ -105,6 +106,10 @@ def scroll(widget):
     layout = QVBoxLayout(container)
     layout.setContentsMargins(2, 4, 2, 8)
     widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+    # Wide numeric ranges make Qt request very wide inputs; let the inspector width win.
+    for field in widget.findChildren(QAbstractSpinBox) + widget.findChildren(QComboBox):
+        field.setMinimumWidth(64)
+        field.setSizePolicy(QSizePolicy.Policy.Ignored, field.sizePolicy().verticalPolicy())
     layout.addWidget(widget)
     layout.addStretch()
     area.setWidget(container)
@@ -132,6 +137,7 @@ class MainWindow(QMainWindow):
         self._peak_ids = []
         self._axis_context = None
         self._suspend_auto_axes = False
+        self._auto_syncing = False
         self._build()
         self._connect()
         self._refresh()
@@ -185,6 +191,9 @@ class MainWindow(QMainWindow):
         ]:
             action = QAction(name, self)
             action.setShortcut(QKeySequence(key))
+            if callback == self._delete_peak:
+                # The Mac "delete" key sends Backspace.
+                action.setShortcuts([QKeySequence(key), QKeySequence(Qt.Key.Key_Backspace)])
             action.triggered.connect(callback)
             self.addAction(action)
 
@@ -318,7 +327,7 @@ class MainWindow(QMainWindow):
         pk_row = QHBoxLayout()
         pk_row.addWidget(
             label(
-                "Ctrl / ⌘ + klik: přidat · Shift + klik: odebrat · táhni popisek",
+                "S ručním výběrem píků: Ctrl / ⌘ + klik přidá, Shift + klik odebere · popisky lze táhnout",
                 "muted",
             )
         )
@@ -421,6 +430,8 @@ class MainWindow(QMainWindow):
             signal.connect(self._mark_dirty)
 
     def _mark_dirty(self):
+        if self._auto_syncing:
+            return
         self._dirty = True
         self.project_label.setText(
             (Path(self._project_path).stem if self._project_path else "Nový projekt")
@@ -433,6 +444,23 @@ class MainWindow(QMainWindow):
         self._syncing = True
         try:
             state = self._state
+            spec = state.active_spectrum
+            # Selecting another spectrum of the same kind must keep user-edited
+            # axis and detection settings; only a different measurement type syncs.
+            # Runs first so the controls below show the synchronized settings.
+            context = (
+                None
+                if spec is None
+                else (
+                    spec.meta.get("technique"),
+                    spec.meta.get("y_kind"),
+                    spec.meta.get("x_unit"),
+                )
+            )
+            if context != self._axis_context:
+                self._axis_context = context
+                if not self._suspend_auto_axes and context is not None:
+                    self._sync_axes_to_measurement()
             self.list.blockSignals(True)
             self.list.clear()
             for spec in state.spectra:
@@ -459,21 +487,6 @@ class MainWindow(QMainWindow):
             self.offset.blockSignals(True)
             self.offset.setValue(state.plot.stack_offset)
             self.offset.blockSignals(False)
-            spec = state.active_spectrum
-            context = (
-                None
-                if spec is None
-                else (
-                    spec.id,
-                    spec.meta.get("technique"),
-                    spec.meta.get("y_kind"),
-                    spec.meta.get("x_unit"),
-                )
-            )
-            if context != self._axis_context:
-                self._axis_context = context
-                if not self._suspend_auto_axes:
-                    self._sync_axes_to_measurement()
             for widget in [self.technique, self.y_kind, self.x_unit]:
                 widget.setEnabled(spec is not None)
                 widget.blockSignals(True)
@@ -499,7 +512,7 @@ class MainWindow(QMainWindow):
             for widget in [self.technique, self.y_kind, self.x_unit]:
                 widget.blockSignals(False)
             self.preview_label.setText(
-                "NÁHLED · dosud nepoužito" if state.preview else ""
+                "NÁHLED · dosud nepoužito" if state.preview_summary else ""
             )
             self._refresh_peaks()
             self.history_list.clear()
@@ -568,6 +581,14 @@ class MainWindow(QMainWindow):
         spec = self._state.active_spectrum
         if not spec:
             return
+        # Derived display defaults follow the selection; they are not user edits.
+        self._auto_syncing = True
+        try:
+            self._apply_measurement_defaults(spec)
+        finally:
+            self._auto_syncing = False
+
+    def _apply_measurement_defaults(self, spec):
         meta = spec.meta
         technique = meta.get("technique", "custom")
         kind = meta.get("y_kind", "intensity")
@@ -578,7 +599,7 @@ class MainWindow(QMainWindow):
             "uv_vis": "Wavelength",
         }.get(technique, "X")
         self._state.set_graphics(
-            x_label=f"{name} ({unit})", y_label=Y_KINDS.get(kind, "Intensity")
+            x_label=f"{name} ({unit})", y_label=AXIS_Y_LABELS.get(kind, "Intensity (a.u.)")
         )
         self._state.set_plot(invert_x=technique == "infrared")
         self._state.set_peaks(
@@ -663,6 +684,7 @@ class MainWindow(QMainWindow):
         for path in paths:
             try:
                 curves = parse_spectrum_files(path)
+                batch = []
                 for index, parsed in enumerate(curves):
                     name = parsed.metadata.get("name") or extract_label_from_filename(
                         path
@@ -678,16 +700,16 @@ class MainWindow(QMainWindow):
                         Peak(x=p.x, source="manual", label=p.label or None)
                         for p in parsed.imported_peaks
                     ]
-                    self._state.add_spectrum(
-                        Spectrum(name=name, x=parsed.x, y=parsed.y, meta=meta),
-                        imported_peaks=peaks,
+                    batch.append(
+                        (Spectrum(name=name, x=parsed.x, y=parsed.y, meta=meta), peaks)
                     )
-                    count += 1
+                # One signal round per file keeps large WDF maps responsive.
+                self._state.add_spectra(batch)
+                count += len(batch)
             except (SpectrumParseError, ValueError, OSError) as exc:
                 errors.append(f"{Path(path).name}: {exc}")
         if paths:
             self._state.set_last_folder(str(Path(paths[0]).parent), "import")
-        self._sync_axes_to_measurement()
         self._fit()
         self.statusBar().showMessage(
             f"Načteno {count} spekter" + (f" · chyb: {len(errors)}" if errors else "")
@@ -803,6 +825,11 @@ class MainWindow(QMainWindow):
             )
 
     def _delete_peak(self):
+        # Require an explicit row selection; a stale current row must not be deleted
+        # by a Delete/Backspace press elsewhere in the window.
+        if not self.peaks_table.selectionModel().hasSelection():
+            self.statusBar().showMessage("Nejprve vyber pík v tabulce")
+            return
         row = self.peaks_table.currentRow()
         if self._state.active_spectrum and 0 <= row < len(self._peak_ids):
             self._state.remove_peak(self._state.active_spectrum_id, self._peak_ids[row])
@@ -829,6 +856,7 @@ class MainWindow(QMainWindow):
     def load_demo(self):
         x = np.linspace(200, 2000, 1801)
         rng = np.random.default_rng(7)
+        batch = []
         for i, name in enumerate(
             ["Reference · syntetický Raman", "Vzorek · syntetický Raman"]
         ):
@@ -846,7 +874,7 @@ class MainWindow(QMainWindow):
                 )
                 + rng.normal(0, 2, len(x))
             )
-            self._state.add_spectrum(
+            batch.append((
                 Spectrum(
                     name=name,
                     x=x.tolist(),
@@ -858,10 +886,11 @@ class MainWindow(QMainWindow):
                         "source_format": "synthetic",
                         "synthetic": True,
                     },
-                )
-            )
+                ),
+                None,
+            ))
+        self._state.add_spectra(batch)
         self._state.set_plot(show_all_spectra=True, show_grid=True)
-        self._sync_axes_to_measurement()
         self._fit()
         self.statusBar().showMessage(
             "Demonstrační data jsou syntetická · nejsou laboratorním měřením"
@@ -891,13 +920,13 @@ class MainWindow(QMainWindow):
             event.ignore()
 
     def closeEvent(self, event):
-        if not self.ai_panel.shutdown():
-            self.statusBar().showMessage(
-                "Ruším AI požadavek. Zavři okno po dokončení síťového čtení."
-            )
+        if not self._confirm_unsaved():
             event.ignore()
             return
-        if self._confirm_unsaved():
-            event.accept()
-        else:
+        if not self.ai_panel.shutdown():
+            # Never destroy a running QThread: hide now, quit when it finishes.
+            self.hide()
+            self.ai_panel.quit_when_idle()
             event.ignore()
+            return
+        event.accept()

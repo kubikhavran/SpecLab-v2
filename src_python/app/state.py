@@ -35,6 +35,18 @@ from .models import (
 )
 
 
+# Peak labels are stored as offsets from their peak on the curve, so they follow
+# stacking, shifts and baseline changes. Offsets in Y units lose meaning when an
+# operation rescales the ordinate; such operations reset them.
+LABEL_OFFSETS = 'peak_label_offsets'
+_LEGACY_LABEL_POSITIONS = 'peak_label_positions'   # absolute plot coordinates
+_RESCALING_OPS = {'normalize', 'convert_y', 'derivative'}
+
+
+def _rescales(operations) -> bool:
+    return any(op['op'] in _RESCALING_OPS for op in operations)
+
+
 class AppState(QObject):
     """Singleton-style application state container."""
 
@@ -149,7 +161,32 @@ class AppState(QObject):
 
     @property
     def preview(self) -> Optional[dict]:
-        return copy.deepcopy(self._preview)
+        return None if self._preview is None else self._copy_preview(self._preview)
+
+    @staticmethod
+    def _copy_preview(preview: dict) -> dict:
+        """Independent copy; float lists are copied shallowly (floats are immutable)."""
+        def numbers(value):
+            return list(value) if isinstance(value, list) else copy.deepcopy(value)
+
+        copied = copy.deepcopy({k: v for k, v in preview.items() if k != 'results'})
+        copied['results'] = {
+            sid: {
+                key: ([{name: numbers(item) for name, item in detail.items()} for detail in value]
+                      if key == 'details' else
+                      list(value) if key in ('x', 'y') else copy.deepcopy(value))
+                for key, value in result.items()
+            }
+            for sid, result in preview.get('results', {}).items()
+        }
+        return copied
+
+    @property
+    def preview_summary(self) -> Optional[dict]:
+        """Preview identity without the (possibly large) computed curves."""
+        if self._preview is None:
+            return None
+        return copy.deepcopy({k: v for k, v in self._preview.items() if k != 'results'})
 
     @property
     def can_undo(self) -> bool:
@@ -186,27 +223,44 @@ class AppState(QObject):
         spectrum: Spectrum,
         imported_peaks: Optional[List[Peak]] = None,
     ) -> None:
-        if any(s.id == spectrum.id for s in self._spectra):
-            raise ValueError('A spectrum with this id is already loaded.')
-        self._validate_data(spectrum.x, spectrum.y)
-        spectrum.x = list(spectrum.x)
-        spectrum.y = list(spectrum.y)
-        spectrum.meta = self._validated_metadata(spectrum.meta)
-        self._original[spectrum.id] = copy.deepcopy({
-            'x': spectrum.x, 'y': spectrum.y, 'meta': spectrum.meta,
-        })
-        self._recipes[spectrum.id] = []
-        self._discard_session_undo()
-        self._spectra.append(spectrum)
-        self._invalidate()
-        if imported_peaks:
-            self.peaks_manual[spectrum.id] = list(imported_peaks)
+        self.add_spectra([(spectrum, imported_peaks)])
+
+    def add_spectra(self, items) -> None:
+        """Validate and add several spectra with a single set of change signals."""
+        items = [(spec, list(peaks or [])) for spec, peaks in items]
+        if not items:
+            return
+        ids = {s.id for s in self._spectra}
+        prepared = []
+        for spectrum, peaks in items:
+            if spectrum.id in ids:
+                raise ValueError('A spectrum with this id is already loaded.')
+            ids.add(spectrum.id)
+            self._validate_data(spectrum.x, spectrum.y)
+            prepared.append((spectrum, self._validated_metadata(spectrum.meta), peaks))
+        # Nothing is changed until every spectrum in the batch is valid.
+        any_peaks = False
+        for spectrum, meta, peaks in prepared:
+            spectrum.x = list(spectrum.x)
+            spectrum.y = list(spectrum.y)
+            spectrum.meta = meta
+            self._original[spectrum.id] = copy.deepcopy({
+                'x': spectrum.x, 'y': spectrum.y, 'meta': spectrum.meta,
+            })
+            self._recipes[spectrum.id] = []
+            self._spectra.append(spectrum)
+            if peaks:
+                self.peaks_manual[spectrum.id] = peaks
+                any_peaks = True
+        if any_peaks:
             # Imported labels should be visible immediately.
             self._peaks.enabled = True
-        self._active_spectrum_id = spectrum.id
+        self._discard_session_undo()
+        self._invalidate()
+        self._active_spectrum_id = prepared[-1][0].id
         self.spectra_changed.emit()
         self.active_spectrum_changed.emit()
-        if imported_peaks:
+        if any_peaks:
             self.peaks_changed.emit()
 
     def remove_spectrum(self, spectrum_id: str) -> None:
@@ -305,11 +359,16 @@ class AppState(QObject):
         before = self._snapshot()
         spec.meta = meta
         # A modality selection describes the imported data until processing starts.
-        # After processing, current ordinate semantics must not relabel the raw data.
+        # After processing, current ordinate semantics must not relabel the raw data,
+        # but technique and X unit still describe the measurement itself; keeping
+        # them in the original lets stage removal/replay preserve the user's choice.
         if not self._recipes.get(spectrum_id):
             raw_meta = copy.deepcopy(meta)
-            raw_meta.pop('peak_label_positions', None)
-            self._original[spectrum_id]['meta'] = raw_meta
+            raw_meta.pop(LABEL_OFFSETS, None)
+        else:
+            raw_meta = copy.deepcopy(self._original[spectrum_id]['meta'])
+            raw_meta.update({key: meta[key] for key in ('technique', 'x_unit')})
+        self._original[spectrum_id] = {**self._original[spectrum_id], 'meta': raw_meta}
         self._record_transaction(before, 'Change spectrum metadata', 'manual', [], [spectrum_id])
 
     # ── Settings mutations (we'll expand these as panels are built) ──
@@ -441,14 +500,16 @@ class AppState(QObject):
             raise ValueError('Unknown ordinate type.')
         if not isinstance(result['x_unit'], str) or len(result['x_unit']) > 100:
             raise ValueError('X unit must be a short string.')
-        positions = result.get('peak_label_positions', {})
-        if not isinstance(positions, dict) or len(positions) > 10000:
-            raise ValueError('Peak label positions must be a bounded object.')
-        for pid, coords in positions.items():
+        # Absolute positions from earlier builds drift with stacking; fall back to defaults.
+        result.pop(_LEGACY_LABEL_POSITIONS, None)
+        offsets = result.get(LABEL_OFFSETS, {})
+        if not isinstance(offsets, dict) or len(offsets) > 10000:
+            raise ValueError('Peak label offsets must be a bounded object.')
+        for pid, coords in offsets.items():
             if not isinstance(pid, str) or not isinstance(coords, list) or len(coords) != 2:
-                raise ValueError('Peak label positions require an id and two coordinates.')
+                raise ValueError('Peak label offsets require an id and two coordinates.')
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in coords):
-                raise ValueError('Peak label coordinates must be finite.')
+                raise ValueError('Peak label offsets must be finite.')
         return result
 
     def _discard_session_undo(self) -> None:
@@ -512,7 +573,7 @@ class AppState(QObject):
             'operations': operations, 'source': source, 'label': label,
             'results': results,
         }
-        self._preview = copy.deepcopy(proposal)
+        self._preview = self._copy_preview(proposal)
         self.preview_changed.emit()
         return proposal
 
@@ -542,6 +603,8 @@ class AppState(QObject):
             spec.x, spec.y = list(result['x']), list(result['y'])
             spec.meta = copy.deepcopy(result['meta'])
             self._clear_derived(spec.id)
+            if _rescales(preview['operations']):
+                spec.meta.pop(LABEL_OFFSETS, None)
             old_recipe = self._recipes.get(spec.id, [])
             self._shift_manual_peaks(spec.id, old_recipe, old_recipe + preview['operations'])
             self._recipes.setdefault(spec.id, []).extend(copy.deepcopy(preview['operations']))
@@ -559,7 +622,7 @@ class AppState(QObject):
     def _clear_derived(self, sid: str) -> None:
         spec = next(s for s in self._spectra if s.id == sid)
         for peak in self.peaks_auto.get(sid, []):
-            spec.meta.get('peak_label_positions', {}).pop(peak.id, None)
+            spec.meta.get(LABEL_OFFSETS, {}).pop(peak.id, None)
         for store in (self.cosmic_clean_y, self.processed_y, self.baseline_y,
                       self.smoothed_y, self.peaks_auto):
             store.pop(sid, None)
@@ -576,16 +639,19 @@ class AppState(QObject):
         delta = x_shift(new_recipe) - x_shift(old_recipe)
         for peak in self.peaks_manual.get(sid, []):
             peak.x += delta
-        spec = next(s for s in self._spectra if s.id == sid)
-        positions = spec.meta.get('peak_label_positions', {})
-        for pid in {peak.id for peak in self.peaks_manual.get(sid, [])}:
-            if pid in positions:
-                positions[pid][0] += delta
 
     @staticmethod
-    def _carry_peak_positions(old_meta, new_meta) -> None:
-        if 'peak_label_positions' in old_meta:
-            new_meta['peak_label_positions'] = copy.deepcopy(old_meta['peak_label_positions'])
+    def _carry_peak_positions(old_meta, new_meta, old_recipe, new_recipe) -> None:
+        """Keep label offsets when both recipes give the ordinate the same scale.
+
+        Offsets are in Y units, so they survive only if the rescaling steps
+        (normalize/convert/derivative) are identical in both recipes.
+        """
+        def scale(recipe):
+            return [op for op in recipe if op['op'] in _RESCALING_OPS]
+
+        if LABEL_OFFSETS in old_meta and scale(old_recipe) == scale(new_recipe):
+            new_meta[LABEL_OFFSETS] = copy.deepcopy(old_meta[LABEL_OFFSETS])
 
     def reset_processing(self, ids=None) -> dict:
         selected = self._resolve_ids(ids)
@@ -595,7 +661,7 @@ class AppState(QObject):
                 continue
             raw = self._original[spec.id]
             meta = copy.deepcopy(raw['meta'])
-            self._carry_peak_positions(spec.meta, meta)
+            self._carry_peak_positions(spec.meta, meta, self._recipes.get(spec.id, []), [])
             spec.x, spec.y = list(raw['x']), list(raw['y'])
             spec.meta = meta
             self._shift_manual_peaks(spec.id, self._recipes.get(spec.id, []), [])
@@ -623,7 +689,9 @@ class AppState(QObject):
             if spec.id not in selected:
                 continue
             result = results[spec.id]
-            self._carry_peak_positions(spec.meta, result['meta'])
+            # Only baseline/smooth/despike can be removed here; the Y scale is unchanged.
+            self._carry_peak_positions(spec.meta, result['meta'],
+                                       self._recipes.get(spec.id, []), recipes[spec.id])
             spec.x, spec.y, spec.meta = result['x'], result['y'], result['meta']
             self._shift_manual_peaks(spec.id, self._recipes.get(spec.id, []), recipes[spec.id])
             self._recipes[spec.id] = recipes[spec.id]
@@ -672,14 +740,18 @@ class AppState(QObject):
         for spec in self._spectra:
             if recipe is not None:
                 result = results[spec.id]
-                self._carry_peak_positions(spec.meta, result['meta'])
+                self._carry_peak_positions(spec.meta, result['meta'],
+                                           self._recipes.get(spec.id, []), recipe)
                 spec.x, spec.y, spec.meta = result['x'], result['y'], result['meta']
                 self._shift_manual_peaks(spec.id, self._recipes.get(spec.id, []), recipe)
                 self._clear_derived(spec.id)
                 self._recipes[spec.id] = copy.deepcopy(recipe)
                 self._refresh_manual_indices(spec)
-        self.peaks_auto.clear()
-        self.peaks_auto.update(auto)
+        # Settings-only presets keep detected peaks; replayed data already
+        # dropped stale ones in _clear_derived.
+        if detect_auto and p.enabled:
+            self.peaks_auto.clear()
+            self.peaks_auto.update(auto)
         if recipe is not None:
             self._baseline.enabled = any(op['op'] == 'baseline' for op in recipe)
         return self._record_transaction(before, 'Apply preset from original data' if recipe is not None else 'Apply preset settings',
@@ -697,15 +769,16 @@ class AppState(QObject):
                 return self._record_transaction(before, 'Edit peak label', 'manual', [], [spectrum_id])
         raise ValueError('Peak is no longer present.')
 
-    def set_peak_label_position(self, spectrum_id: str, peak_id: str, x: float, y: float) -> dict:
+    def set_peak_label_offset(self, spectrum_id: str, peak_id: str, dx: float, dy: float) -> dict:
+        """Store a dragged label relative to its peak on the (unstacked) curve."""
         self._resolve_ids([spectrum_id])
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in (x, y)):
-            raise ValueError('Peak label position must be finite.')
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in (dx, dy)):
+            raise ValueError('Peak label offset must be finite.')
         if not any(p.id == peak_id for p in self.peaks_auto.get(spectrum_id, []) + self.peaks_manual.get(spectrum_id, [])):
             raise ValueError('Peak is no longer present.')
         before = self._snapshot()
         spec = next(s for s in self._spectra if s.id == spectrum_id)
-        spec.meta.setdefault('peak_label_positions', {})[peak_id] = [float(x), float(y)]
+        spec.meta.setdefault(LABEL_OFFSETS, {})[peak_id] = [float(dx), float(dy)]
         return self._record_transaction(before, 'Move peak label', 'manual', [], [spectrum_id])
 
     def reset_peak_label_positions(self, ids=None) -> dict:
@@ -713,7 +786,7 @@ class AppState(QObject):
         before = self._snapshot()
         for spec in self._spectra:
             if spec.id in selected:
-                spec.meta.pop('peak_label_positions', None)
+                spec.meta.pop(LABEL_OFFSETS, None)
         return self._record_transaction(before, 'Reset peak label positions', 'manual', [], selected)
 
     def add_manual_peak(self, spectrum_id: str, x: float, label: Optional[str] = None) -> Peak:
@@ -772,7 +845,7 @@ class AppState(QObject):
             self.peaks_auto.pop(sid, None)
             self.peaks_manual.pop(sid, None)
             spec = next(s for s in self._spectra if s.id == sid)
-            spec.meta.pop('peak_label_positions', None)
+            spec.meta.pop(LABEL_OFFSETS, None)
         self._record_transaction(before, 'Clear peaks', 'manual', [], selected)
 
     def remove_peak(self, spectrum_id: str, peak_id: str) -> dict:
@@ -782,51 +855,81 @@ class AppState(QObject):
                 before = self._snapshot()
                 store[spectrum_id] = [p for p in store[spectrum_id] if p.id != peak_id]
                 spec = next(s for s in self._spectra if s.id == spectrum_id)
-                spec.meta.get('peak_label_positions', {}).pop(peak_id, None)
+                spec.meta.get(LABEL_OFFSETS, {}).pop(peak_id, None)
                 return self._record_transaction(before, 'Remove peak', 'manual', [], [spectrum_id])
         raise ValueError('Peak is no longer present.')
 
-    def _snapshot(self) -> dict:
-        names = ('_spectra', '_active_spectrum_id', '_original', '_recipes',
-                 '_plot', '_baseline', '_smoothing', '_cosmic', '_peaks',
-                 '_graphics', '_export', '_spectral_mode',
-                 'cosmic_clean_y', 'processed_y', 'baseline_y', 'smoothed_y',
-                 'peaks_auto', 'peaks_manual')
-        return copy.deepcopy({name: getattr(self, name) for name in names})
+    _SNAPSHOT_NAMES = ('_spectra', '_active_spectrum_id', '_original', '_recipes',
+                       '_plot', '_baseline', '_smoothing', '_cosmic', '_peaks',
+                       '_graphics', '_export', '_spectral_mode',
+                       'cosmic_clean_y', 'processed_y', 'baseline_y', 'smoothed_y',
+                       'peaks_auto', 'peaks_manual')
+    _ARRAY_CACHES = ('cosmic_clean_y', 'processed_y', 'baseline_y', 'smoothed_y')
 
-    def _restore(self, snapshot: dict) -> None:
-        for name, value in copy.deepcopy(snapshot).items():
+    @classmethod
+    def _array_memo(cls, *workspaces) -> dict:
+        """deepcopy memo that shares spectral arrays instead of copying them.
+
+        X/Y lists are replaced, never modified in place, so undo entries may
+        reference them. Copying them for every action made each step O(points)
+        in time and memory.
+        """
+        memo = {}
+        for workspace in workspaces:
+            arrays = []
+            for spec in workspace['_spectra']:
+                arrays += [spec.x, spec.y]
+            for raw in workspace['_original'].values():
+                arrays += [raw['x'], raw['y']]
+            for name in cls._ARRAY_CACHES:
+                arrays += list(workspace[name].values())
+            for array in arrays:
+                memo[id(array)] = array
+        return memo
+
+    def _workspace(self) -> dict:
+        return {name: getattr(self, name) for name in self._SNAPSHOT_NAMES}
+
+    def _snapshot(self) -> dict:
+        workspace = self._workspace()
+        return copy.deepcopy(workspace, self._array_memo(workspace))
+
+    def _restore(self, snapshot: dict, memo: Optional[dict] = None) -> None:
+        memo = self._array_memo(snapshot) if memo is None else memo
+        for name, value in copy.deepcopy(snapshot, memo).items():
             setattr(self, name, value)
 
     @classmethod
-    def _merge_unchanged(cls, before, after, target, current):
+    def _merge_unchanged(cls, before, after, target, current, memo=None):
         """Keep later edits to fields that this transaction did not touch."""
+        memo = {} if memo is None else memo
         if before == after:
-            return copy.deepcopy(current)
+            return copy.deepcopy(current, memo)
         if is_dataclass(before) and is_dataclass(after) and is_dataclass(current):
-            result = copy.deepcopy(target)
+            result = copy.deepcopy(target, memo)
             for field in fields(result):
                 name = field.name
                 setattr(result, name, cls._merge_unchanged(getattr(before, name), getattr(after, name),
-                                                          getattr(target, name), getattr(current, name)))
+                                                          getattr(target, name), getattr(current, name), memo))
             return result
         if all(isinstance(item, dict) for item in (before, after, target, current)):
-            result = copy.deepcopy(target)
+            result = copy.deepcopy(target, memo)
             for key in set(before) | set(after) | set(current):
                 same_membership = (key in before) == (key in after)
                 if same_membership and before.get(key) == after.get(key):
                     if key in current:
-                        result[key] = copy.deepcopy(current[key])
+                        result[key] = copy.deepcopy(current[key], memo)
                     else:
                         result.pop(key, None)
                 elif all(key in item for item in (before, after, target, current)):
-                    result[key] = cls._merge_unchanged(before[key], after[key], target[key], current[key])
+                    result[key] = cls._merge_unchanged(before[key], after[key], target[key], current[key], memo)
             return result
-        return copy.deepcopy(target)
+        return copy.deepcopy(target, memo)
 
     def _restore_transaction(self, entry, direction: str) -> None:
         before, after = entry['before'], entry['after']
         target = before if direction == 'undo' else after
+        memo = self._array_memo(before, after, self._workspace())
         result = {}
         for attr, value in target.items():
             if attr == '_spectra':
@@ -836,11 +939,11 @@ class AppState(QObject):
                 target_by_id = {s.id: s for s in value}
                 order = ([s.id for s in self._spectra] if [s.id for s in before[attr]] == [s.id for s in after[attr]]
                          else [s.id for s in value])
-                result[attr] = [self._merge_unchanged(b[sid], a[sid], target_by_id[sid], current[sid])
+                result[attr] = [self._merge_unchanged(b[sid], a[sid], target_by_id[sid], current[sid], memo)
                                 for sid in order]
             else:
-                result[attr] = self._merge_unchanged(before[attr], after[attr], value, getattr(self, attr))
-        self._restore(result)
+                result[attr] = self._merge_unchanged(before[attr], after[attr], value, getattr(self, attr), memo)
+        self._restore(result, memo)
 
     def _record_transaction(self, before, label, source, operations, ids) -> dict:
         record = {

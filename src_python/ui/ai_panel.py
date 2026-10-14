@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QSettings, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,7 +19,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.ai_client import DEFAULT_BASE_URL, EInfraClient, parse_plan, spectrum_context
+from core.ai_client import (
+    DEFAULT_BASE_URL,
+    PREFERRED_MODEL,
+    EInfraClient,
+    chat_models,
+    parse_plan,
+    spectrum_context,
+    stored_api_key,
+)
 
 
 class _RequestThread(QThread):
@@ -45,6 +52,7 @@ class AIPanel(QWidget):
         super().__init__(parent)
         self.state = state
         self._thread = None
+        self._active_client = None
         self._proposal_revision = None
         self._proposal_ids = None
         self._proposal_source = "manual"
@@ -64,14 +72,23 @@ class AIPanel(QWidget):
         intro.setObjectName("muted")
         layout.addWidget(intro)
         form = QFormLayout()
-        self.url = QLineEdit(DEFAULT_BASE_URL)
+        # Endpoint and model are remembered between sessions; the key never is.
+        self._settings = QSettings("SpecLab", "SpecLab Studio")
+        self.url = QLineEdit(str(self._settings.value("ai/base_url", DEFAULT_BASE_URL)))
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key.setPlaceholderText("API klíč / E_INFRA_API_TOKEN")
-        self.key.setToolTip("Klíč zůstává pouze v paměti po dobu běhu aplikace.")
+        self.key.setPlaceholderText("Prázdné = Klíčenka / E_INFRA_API_TOKEN")
+        self.key.setToolTip(
+            "Zadaný klíč zůstává jen v paměti. Prázdné pole použije klíč uložený "
+            "v Klíčence macOS (služba e-infra-api) nebo proměnnou E_INFRA_API_TOKEN."
+        )
         self.model = QComboBox()
         self.model.setEditable(True)
         self.model.setPlaceholderText("Načti nebo zadej ID modelu")
+        saved_model = str(self._settings.value("ai/model", ""))
+        if saved_model:
+            self.model.addItem(saved_model)
+            self.model.setCurrentText(saved_model)
         form.addRow("API", self.url)
         form.addRow("Klíč", self.key)
         form.addRow("Model", self.model)
@@ -135,9 +152,7 @@ class AIPanel(QWidget):
         layout.addStretch()
 
     def _client(self):
-        return EInfraClient(
-            self.key.text() or os.getenv("E_INFRA_API_TOKEN", ""), self.url.text()
-        )
+        return EInfraClient(self.key.text() or stored_api_key(), self.url.text())
 
     def _context(self):
         spec = self.state.active_spectrum
@@ -160,9 +175,10 @@ class AIPanel(QWidget):
         except ValueError as exc:
             self.status.setText(str(exc))
 
-    def _start(self, function, callback):
+    def _start(self, function, callback, client=None):
         if self._thread is not None and self._thread.isRunning():
             return
+        self._active_client = client
         self._thread = _RequestThread(function, self)
         self.request_button.setEnabled(False)
         self.models_button.setEnabled(False)
@@ -173,6 +189,7 @@ class AIPanel(QWidget):
         self._thread.start()
 
     def _finished(self):
+        self._active_client = None
         self.request_button.setEnabled(True)
         self.models_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -182,22 +199,33 @@ class AIPanel(QWidget):
     def _cancel(self):
         if self._thread:
             self._thread.requestInterruption()
-        self.status.setText(
-            "Rušení požadavku… probíhající síťové čtení má omezený timeout."
-        )
+        if self._active_client is not None:
+            self._active_client.cancel()
+        self.status.setText("Ruším požadavek…")
 
     def _models(self):
         try:
             client = self._client()
             self.status.setText("Načítám seznam modelů…")
-            self._start(client.list_models, self._models_ready)
+            self._start(client.list_models, self._models_ready, client)
         except ValueError as exc:
             self.status.setText(str(exc))
 
     def _models_ready(self, models):
+        current = self.model.currentText().strip()
+        usable = chat_models(models)
         self.model.clear()
-        self.model.addItems(models)
-        self.status.setText(f"Dostupné modely: {len(models)}. Vyber model pro návrh.")
+        self.model.addItems(usable)
+        for choice in (current, PREFERRED_MODEL):
+            if choice and choice in usable:
+                self.model.setCurrentText(choice)
+                break
+        hidden = len(models) - len(usable)
+        self.status.setText(
+            f"Dostupné modely: {len(usable)}"
+            + (f" (skryto {hidden} embedding/řečových)" if hidden else "")
+            + ". Vyber model pro návrh."
+        )
 
     def _propose(self):
         if self._thread is not None and self._thread.isRunning():
@@ -211,6 +239,8 @@ class AIPanel(QWidget):
             )
             if not model or not prompt:
                 raise ValueError("Vyber model a napiš požadovanou úpravu.")
+            self._settings.setValue("ai/model", model)
+            self._settings.setValue("ai/base_url", self.url.text().strip())
             self._proposal_revision = self.state.revision
             self._proposal_ids = [self.state.active_spectrum_id]
             request_revision = self._proposal_revision
@@ -225,6 +255,7 @@ class AIPanel(QWidget):
                     cancel=lambda: self._thread.isInterruptionRequested(),
                 ),
                 lambda plan: self._proposal_ready(plan, request_revision, request_ids),
+                client,
             )
         except ValueError as exc:
             self.status.setText(str(exc))
@@ -304,7 +335,7 @@ class AIPanel(QWidget):
             self.status.setText(str(exc))
 
     def _sync_apply(self):
-        preview = self.state.preview
+        preview = self.state.preview_summary
         valid = bool(
             preview
             and preview.get("id") == self._own_preview_id
@@ -315,12 +346,10 @@ class AIPanel(QWidget):
 
     def _apply(self):
         try:
-            if (
-                not self.state.preview
-                or self.state.preview.get("id") != self._own_preview_id
-            ):
+            summary = self.state.preview_summary
+            if not summary or summary.get("id") != self._own_preview_id:
                 raise ValueError("Nejprve vytvoř náhled tohoto návrhu.")
-            self.state.apply_preview(self.state.preview)
+            self.state.apply_preview()
             self._proposal_revision = None
             self._proposal_ids = None
             self._own_preview_id = None
@@ -330,8 +359,22 @@ class AIPanel(QWidget):
         except ValueError as exc:
             self.status.setText(str(exc))
 
-    def shutdown(self) -> bool:
+    def shutdown(self, wait_ms: int = 3000) -> bool:
+        """Cancel a running request; True once no network thread remains."""
         if self._thread and self._thread.isRunning():
-            self._thread.requestInterruption()
-            return False
+            self._cancel()
+            return self._thread.wait(wait_ms)
         return True
+
+    def quit_when_idle(self) -> None:
+        """Quit the application once a still-connecting request gives up.
+
+        A connection that has not delivered a response yet cannot be interrupted;
+        the thread ends at the latest after the client timeout.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        if self._thread and self._thread.isRunning():
+            self._thread.finished.connect(QApplication.quit)
+        else:
+            QApplication.quit()

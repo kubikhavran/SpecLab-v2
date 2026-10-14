@@ -38,7 +38,7 @@ class CosmicPanel(QWidget):
 
         # Window slider (odd, 5–51)
         win_row = QHBoxLayout()
-        win_row.addWidget(QLabel("Window:"))
+        win_row.addWidget(QLabel("Okno:"))
         self._win_label = QLabel("11")
         win_row.addStretch()
         win_row.addWidget(self._win_label)
@@ -52,7 +52,7 @@ class CosmicPanel(QWidget):
 
         # Threshold slider (3.0–10.0, step 0.5)
         thr_row = QHBoxLayout()
-        thr_row.addWidget(QLabel("Threshold:"))
+        thr_row.addWidget(QLabel("Práh:"))
         self._thr_label = QLabel("6.0")
         thr_row.addStretch()
         thr_row.addWidget(self._thr_label)
@@ -65,7 +65,7 @@ class CosmicPanel(QWidget):
 
         # Max width slider (1–7)
         mw_row = QHBoxLayout()
-        mw_row.addWidget(QLabel("Max width:"))
+        mw_row.addWidget(QLabel("Max. šířka:"))
         self._mw_label = QLabel("3")
         mw_row.addStretch()
         mw_row.addWidget(self._mw_label)
@@ -77,13 +77,13 @@ class CosmicPanel(QWidget):
         layout.addWidget(self._mw_slider)
 
         # Positive only checkbox
-        self._chk_positive = QCheckBox("Positive only")
+        self._chk_positive = QCheckBox("Pouze kladné")
         self._chk_positive.setChecked(True)
         layout.addWidget(self._chk_positive)
 
         # Iterations slider (1–3)
         iter_row = QHBoxLayout()
-        iter_row.addWidget(QLabel("Iterations:"))
+        iter_row.addWidget(QLabel("Iterace:"))
         self._iter_label = QLabel("1")
         iter_row.addStretch()
         iter_row.addWidget(self._iter_label)
@@ -96,15 +96,15 @@ class CosmicPanel(QWidget):
 
         # Buttons
         btn1 = QHBoxLayout()
-        self._btn_apply = QPushButton("Apply cosmic")
-        self._btn_reset = QPushButton("Reset cosmic")
+        self._btn_apply = QPushButton("Odstranit kosmické špičky")
+        self._btn_reset = QPushButton("Vrátit kosmické špičky")
         btn1.addWidget(self._btn_apply)
         btn1.addWidget(self._btn_reset)
         layout.addLayout(btn1)
 
         btn2 = QHBoxLayout()
-        self._btn_apply_all = QPushButton("Apply ALL")
-        self._btn_reset_all = QPushButton("Reset ALL")
+        self._btn_apply_all = QPushButton("Použít na vše")
+        self._btn_reset_all = QPushButton("Vrátit u všech")
         btn2.addWidget(self._btn_apply_all)
         btn2.addWidget(self._btn_reset_all)
         layout.addLayout(btn2)
@@ -195,9 +195,9 @@ class CosmicPanel(QWidget):
             self._state.apply_preview(proposal)
             total = sum(result.get('details', [{}])[-1].get('removed_count', 0)
                         for result in proposal['results'].values())
-            self._info.setText(f"Removed: {total} spike points")
+            self._info.setText(f"Odstraněné body špiček: {total}")
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be applied", str(error))
+            QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
     def _reset(self, ids: list[str]) -> None:
         if not ids:
@@ -207,7 +207,7 @@ class CosmicPanel(QWidget):
             self._last_removed.clear()
             self._info.setText("")
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be reset", str(error))
+            QMessageBox.warning(self, "Zpracování nelze vrátit", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum

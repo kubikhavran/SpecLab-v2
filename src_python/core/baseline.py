@@ -2,14 +2,16 @@
 Asymmetric Least Squares (AsLS) baseline estimation.
 Port of aslsBaseline.ts + applyBaseline.ts.
 
-Uses scipy.sparse for the banded matrix operations (much faster than
-the original JS conjugate-gradient solver for large spectra).
+The system (W + lambda·DᵀD) z = W y is symmetric, positive definite and
+pentadiagonal, so each reweighting step uses a banded Cholesky solve; the
+general sparse LU solver remains as a fallback for ill-conditioned input.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from scipy import sparse
+from scipy.linalg import LinAlgError, solveh_banded
 from scipy.sparse.linalg import spsolve
 
 
@@ -52,13 +54,22 @@ def asls_baseline(
     D = sparse.diags(diags, [0, 1, 2], shape=(L - 2, L), format="csc")
     DTD = lam * D.T.dot(D)
 
+    # Upper banded storage of lambda·DᵀD: rows = 2nd, 1st super-diagonal, main.
+    bands = np.zeros((3, L), dtype=np.float64)
+    bands[0, 2:] = DTD.diagonal(2)
+    bands[1, 1:] = DTD.diagonal(1)
+    main = DTD.diagonal(0)
+
     w = np.ones(L, dtype=np.float64)
     z = y.copy()
 
     for _ in range(n_iter):
-        W = sparse.diags(w, 0, shape=(L, L), format="csc")
-        Z = W + DTD
-        z = spsolve(Z, w * y)
+        bands[2] = main + w
+        try:
+            z = solveh_banded(bands, w * y, check_finite=False)
+        except LinAlgError:
+            W = sparse.diags(w, 0, shape=(L, L), format="csc")
+            z = spsolve(W + DTD, w * y)
         # Update weights: points above baseline get weight p, below get (1 - p)
         w = np.where(y > z, p, 1.0 - p)
 

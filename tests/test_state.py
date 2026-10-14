@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from app.models import Peak, Spectrum
-from app.state import AppState
+from app.state import LABEL_OFFSETS, AppState
 from core.presets import apply_preset_payload, capture_preset_payload
 
 
@@ -115,20 +115,67 @@ class StateTests(unittest.TestCase):
         self.state.undo()
         self.assertEqual(self.state.peaks_manual[self.spec.id][0].label, 'old')
 
-    def test_label_positions_persist_without_mutating_original_metadata(self):
+    def test_label_offsets_follow_peak_and_reset_when_ordinate_rescales(self):
         peak = self.state.add_manual_peak(self.spec.id, 5)
-        self.state.set_peak_label_position(self.spec.id, peak.id, 6, 12)
-        self.assertNotIn('peak_label_positions', self.state.original_metadata(self.spec.id))
+        self.state.set_peak_label_offset(self.spec.id, peak.id, 1, 12)
+        self.assertNotIn(LABEL_OFFSETS, self.state.original_metadata(self.spec.id))
         self.state.update_spectrum_metadata(self.spec.id, x_unit='cm^-1')
-        self.assertNotIn('peak_label_positions', self.state.original_metadata(self.spec.id))
+        self.assertNotIn(LABEL_OFFSETS, self.state.original_metadata(self.spec.id))
+        # Offsets are relative to the peak, so a shifted peak keeps its label nearby.
         self.state.apply_operations([op('shift', x=2)])
-        self.assertEqual(self.state.active_spectrum.meta['peak_label_positions'][peak.id], [8, 12])
+        self.assertEqual(self.state.peaks_manual[self.spec.id][0].x, 7)
+        self.assertEqual(self.state.active_spectrum.meta[LABEL_OFFSETS][peak.id], [1, 12])
         self.state.reset_processing()
-        self.assertEqual(self.state.active_spectrum.meta['peak_label_positions'][peak.id], [6, 12])
-        self.state.reset_peak_label_positions()
-        self.assertNotIn('peak_label_positions', self.state.active_spectrum.meta)
+        self.assertEqual(self.state.peaks_manual[self.spec.id][0].x, 5)
+        self.assertEqual(self.state.active_spectrum.meta[LABEL_OFFSETS][peak.id], [1, 12])
+        # A Y offset in old units is meaningless after normalization.
+        self.state.apply_operations([op('normalize')])
+        self.assertNotIn(LABEL_OFFSETS, self.state.active_spectrum.meta)
         self.state.undo()
-        self.assertEqual(self.state.active_spectrum.meta['peak_label_positions'][peak.id], [6, 12])
+        self.assertEqual(self.state.active_spectrum.meta[LABEL_OFFSETS][peak.id], [1, 12])
+        self.state.reset_peak_label_positions()
+        self.assertNotIn(LABEL_OFFSETS, self.state.active_spectrum.meta)
+        self.state.undo()
+        self.assertEqual(self.state.active_spectrum.meta[LABEL_OFFSETS][peak.id], [1, 12])
+        # Absolute positions from earlier builds are dropped instead of misplaced.
+        self.state.update_spectrum_metadata(self.spec.id, peak_label_positions={peak.id: [6, 12]})
+        self.assertNotIn('peak_label_positions', self.state.active_spectrum.meta)
+
+    def test_undo_shares_unchanged_arrays_and_restores_values(self):
+        x_before = self.state.active_spectrum.x
+        self.state.rename_spectrum(self.spec.id, 'renamed')
+        entry = self.state._undo_stack[-1]
+        self.assertIs(entry['before']['_spectra'][0].x, x_before)
+        self.assertIs(entry['after']['_spectra'][0].x, x_before)
+        self.state.apply_operations([op('shift', y=1)])
+        shifted = list(self.state.active_spectrum.y)
+        self.state.rename_spectrum(self.spec.id, 'again')
+        self.state.undo()
+        self.state.undo()
+        self.assertEqual(self.state.active_spectrum.name, 'renamed')
+        self.assertEqual(self.state.active_spectrum.y, [float(i + 1) for i in range(21)])
+        self.state.redo()
+        self.assertEqual(self.state.active_spectrum.y, shifted)
+
+    def test_measurement_type_survives_stage_removal_but_ordinate_does_not(self):
+        self.state.apply_operations([op('baseline')])
+        self.state.update_spectrum_metadata(self.spec.id, technique='raman', x_unit='cm^-1',
+                                            y_kind='intensity')
+        self.state.reset_operation('baseline')
+        meta = self.state.active_spectrum.meta
+        self.assertEqual((meta['technique'], meta['x_unit']), ('raman', 'cm^-1'))
+        # The raw ordinate stays as imported; it is not relabelled after processing.
+        self.assertEqual(self.state.original_metadata(self.spec.id)['y_kind'], 'absorbance')
+
+    def test_batch_add_is_atomic(self):
+        good = Spectrum(name='good', x=[1, 2, 3], y=[1, 2, 3])
+        bad = Spectrum(name='bad', x=[1, 1, 2], y=[1, 2, 3])
+        with self.assertRaises(ValueError):
+            self.state.add_spectra([(good, None), (bad, None)])
+        self.assertEqual(len(self.state.spectra), 1)
+        self.state.add_spectra([(good, [Peak(x=2, source='manual')])])
+        self.assertEqual(self.state.active_spectrum_id, good.id)
+        self.assertTrue(self.state.peaks_settings.enabled)
 
     def test_undo_bound_and_stage_reset(self):
         for _ in range(45):

@@ -43,7 +43,46 @@ def test_strict_envelope_and_empty_information_response():
     with pytest.raises(AIError):
         parse_plan(json.dumps(bad))
     with pytest.raises(AIError):
-        parse_plan("Some commentary " + json.dumps(plan()))
+        parse_plan("No plan here, only {braces} and prose.")
+    with pytest.raises(AIError):
+        parse_plan(json.dumps(plan()) + " or alternatively " + json.dumps(plan([])))
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda text: "Here is the plan:\n" + text + "\nCheck the preview.",
+        lambda text: "<think>The user wants {smoothing}; maybe window 11.</think>\n" + text,
+        lambda text: "Plán:\n```json\n" + text + "\n```",
+    ],
+)
+def test_reasoning_and_prose_around_single_plan(wrap):
+    assert parse_plan(wrap(json.dumps(plan()))) == plan()
+
+
+def test_tls_context_has_certificate_authorities():
+    from core.ai_client import _ssl_context
+
+    context = _ssl_context()
+    assert context.verify_mode.name == "CERT_REQUIRED"
+    assert context.cert_store_stats()["x509_ca"] > 0
+
+
+def test_cancel_before_stream_aborts_without_plan():
+    content = json.dumps(plan())
+    wire = (
+        "data: " + json.dumps({"choices": [{"delta": {"content": content}}]}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+    client = EInfraClient("fake_key")
+
+    def request(*_args):
+        client.cancel()
+        return Response(wire)
+
+    with patch.object(client, "_request", side_effect=request):
+        with pytest.raises(AIError, match="zrušen"):
+            client.propose("test", "smooth", {})
 
 
 def test_context_retains_spike_omits_paths():
@@ -114,3 +153,57 @@ def test_integrate_exact_interpolated_edges():
     assert integrate_band([0, 1, 3], [0, 2, 6], 0.5, 2.5) == pytest.approx(6.0)
     with pytest.raises(ValueError):
         integrate_band([0, 1, 3], [0, 2, 6], -0.5, 2.5)
+
+
+def test_cancelled_model_listing_reports_cancellation():
+    client = EInfraClient("fake_key")
+
+    class Stalled(io.BytesIO):
+        def read(self, *_args):
+            client.cancel()
+            raise OSError("socket shut down")
+
+    with patch.object(client, "_request", return_value=Stalled(b"")):
+        with pytest.raises(AIError, match="zrušen"):
+            client.list_models()
+
+
+def test_stored_key_prefers_environment_then_keychain(monkeypatch):
+    import subprocess
+
+    from core import ai_client
+
+    monkeypatch.setenv("E_INFRA_API_TOKEN", " env-key ")
+    assert ai_client.stored_api_key() == "env-key"
+    monkeypatch.delenv("E_INFRA_API_TOKEN")
+    monkeypatch.setattr(ai_client.sys, "platform", "darwin")
+    calls = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="chain-key\n", stderr="")
+
+    monkeypatch.setattr(ai_client.subprocess, "run", fake_run)
+    assert ai_client.stored_api_key() == "chain-key"
+    assert calls[0][:2] == ["security", "find-generic-password"]
+    monkeypatch.setattr(
+        ai_client.subprocess, "run",
+        lambda args, **_kw: subprocess.CompletedProcess(args, 44, stdout="", stderr="not found"),
+    )
+    assert ai_client.stored_api_key() == ""
+    monkeypatch.setattr(ai_client.sys, "platform", "win32")
+    assert ai_client.stored_api_key() == ""
+
+
+def test_integral_floats_accepted_and_non_chat_models_hidden():
+    from core.ai_client import chat_models
+
+    parsed = parse_plan(json.dumps(plan([{"op": "smooth", "params": {"window": 11.0, "poly_order": 3.0}}])))
+    from core.processing import validate_operations
+
+    assert validate_operations(parsed["operations"])[0]["params"] == {"window": 11, "poly_order": 3}
+    with pytest.raises(ValueError):
+        parse_plan(json.dumps(plan([{"op": "smooth", "params": {"window": 11.5}}])))
+    assert chat_models(["gpt-oss-120b", "nomic-embed-text-v1.5", "qwen3-reranker-4b",
+                        "whisper-large-v3", "multilingual-e5-large-instruct", "qwen3.5"]) == [
+        "gpt-oss-120b", "qwen3.5"]

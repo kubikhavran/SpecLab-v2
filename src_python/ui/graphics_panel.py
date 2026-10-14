@@ -81,7 +81,7 @@ class GraphicsPanel(QWidget):
 
     def _color(self, form, key, label, owner='graphics'):
         widget = QPushButton()
-        widget.setToolTip('Choose a color')
+        widget.setToolTip('Vybrat barvu')
         self._register(key, widget, owner)
         def choose():
             settings = self._state.graphics if owner == 'graphics' else self._state.peaks_settings
@@ -97,66 +97,66 @@ class GraphicsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
-        form = self._section(layout, 'Axis labels')
+        form = self._section(layout, 'Popisky os')
         for key, label, placeholder in (
-            ('x_label', 'X label', 'Raman shift (cm^{-1})'),
-            ('y_label', 'Y label', 'Intensity (a.u.)'),
+            ('x_label', 'Popisek osy X', 'Raman shift (cm^{-1})'),
+            ('y_label', 'Popisek osy Y', 'Intensity (a.u.)'),
         ):
             widget = QLineEdit()
             widget.setPlaceholderText(placeholder)
-            widget.setToolTip('Use ^{…} for superscripts and _{…} for subscripts.')
+            widget.setToolTip('Pro horní index použijte ^{…}, pro dolní index _{…}.')
             self._register(key, widget, 'graphics')
             form.addRow(label, widget)
-        self._check(form, 'axis_label_bold', 'Bold labels')
-        self._check(form, 'axis_label_italic', 'Italic labels')
+        self._check(form, 'axis_label_bold', 'Tučné popisky')
+        self._check(form, 'axis_label_italic', 'Kurzíva popisků')
 
-        form = self._section(layout, 'Fonts and ticks')
-        self._combo(form, 'font_family', 'Font', [(f, f) for f in _FONT_FAMILIES])
-        self._spin(form, 'base_font_size', 'Label size', 8, 72)
-        self._spin(form, 'tick_font_size', 'Tick size', 8, 48)
-        self._check(form, 'tick_label_bold', 'Bold tick labels')
-        self._check(form, 'tick_label_italic', 'Italic tick labels')
-        self._check(form, 'show_x_tick_labels', 'Show X numbers')
-        self._check(form, 'show_y_tick_labels', 'Show Y numbers')
-        self._check(form, 'show_x_tick_marks', 'Show X tick marks')
-        self._check(form, 'show_y_tick_marks', 'Show Y tick marks')
+        form = self._section(layout, 'Písmo a značky os')
+        self._combo(form, 'font_family', 'Písmo', [(f, f) for f in _FONT_FAMILIES])
+        self._spin(form, 'base_font_size', 'Velikost popisků', 8, 72)
+        self._spin(form, 'tick_font_size', 'Velikost značek', 8, 48)
+        self._check(form, 'tick_label_bold', 'Tučné popisky značek')
+        self._check(form, 'tick_label_italic', 'Popisky značek kurzívou')
+        self._check(form, 'show_x_tick_labels', 'Zobrazit hodnoty osy X')
+        self._check(form, 'show_y_tick_labels', 'Zobrazit hodnoty osy Y')
+        self._check(form, 'show_x_tick_marks', 'Zobrazit značky osy X')
+        self._check(form, 'show_y_tick_marks', 'Zobrazit značky osy Y')
 
-        form = self._section(layout, 'Lines and canvas')
-        self._spin(form, 'trace_line_width', 'Spectrum width', 1, 10)
-        self._spin(form, 'axis_line_width', 'Axis width', 1, 10)
-        self._color(form, 'axis_line_color', 'Axis color')
-        self._combo(form, 'frame_mode', 'Frame', [('Open', 'open'), ('Box', 'box')])
-        self._combo(form, 'plot_canvas', 'Canvas', [('Follow theme', 'auto'), ('White', 'white'), ('Dark', 'dark')])
-        self._check(form, 'show_grid', 'Show grid')
-        self._color(form, 'grid_color', 'Grid color')
-        self._spin(form, 'grid_width', 'Grid width', 1, 3)
-        self._combo(form, 'palette', 'Palette', _PALETTE_OPTIONS)
-        self._check(form, 'inline_spectrum_labels', 'Names beside spectra')
-        for key, label in [('spectrum_label_bold', 'Bold spectrum names'),
-                           ('spectrum_label_italic', 'Italic spectrum names')]:
+        form = self._section(layout, 'Čáry a plátno')
+        self._spin(form, 'trace_line_width', 'Šířka spektra', 1, 10)
+        self._spin(form, 'axis_line_width', 'Šířka os', 1, 10)
+        self._color(form, 'axis_line_color', 'Barva os')
+        self._combo(form, 'frame_mode', 'Rámeček', [('Otevřený', 'open'), ('Uzavřený', 'box')])
+        self._combo(form, 'plot_canvas', 'Plátno', [('Podle motivu', 'auto'), ('Bílé', 'white'), ('Tmavé', 'dark')])
+        self._check(form, 'show_grid', 'Zobrazit mřížku')
+        self._color(form, 'grid_color', 'Barva mřížky')
+        self._spin(form, 'grid_width', 'Šířka mřížky', 1, 3)
+        self._combo(form, 'palette', 'Paleta', _PALETTE_OPTIONS)
+        self._check(form, 'inline_spectrum_labels', 'Názvy u spekter')
+        for key, label in [('spectrum_label_bold', 'Tučné názvy spekter'),
+                           ('spectrum_label_italic', 'Názvy spekter kurzívou')]:
             if hasattr(self._state.graphics, key):
                 self._check(form, key, label)
 
-        form = self._section(layout, 'Peak labels')
-        self._check(form, 'show_markers', 'Show markers', 'peaks')
-        self._check(form, 'show_labels', 'Show labels', 'peaks')
-        self._check(form, 'show_leader_lines', 'Show leader lines', 'peaks')
-        self._spin(form, 'label_angle_deg', 'Angle (degrees)', -180, 180, 'peaks')
-        self._spin(form, 'label_font_size', 'Label size', 8, 72, 'peaks')
-        self._check(form, 'label_bold', 'Bold peak labels', 'peaks')
-        self._check(form, 'label_italic', 'Italic peak labels', 'peaks')
-        colors = [('Match spectrum', 'trace'), ('Custom color', 'custom')]
-        self._combo(form, 'label_color_mode', 'Label color', colors, 'peaks')
-        self._color(form, 'label_color', 'Custom label color', 'peaks')
-        self._combo(form, 'leader_color_mode', 'Leader color', colors, 'peaks')
-        self._color(form, 'leader_color', 'Custom leader color', 'peaks')
-        self._spin(form, 'leader_line_width', 'Leader width', 1, 6, 'peaks')
+        form = self._section(layout, 'Popisky píků')
+        self._check(form, 'show_markers', 'Zobrazit značky', 'peaks')
+        self._check(form, 'show_labels', 'Zobrazit popisky', 'peaks')
+        self._check(form, 'show_leader_lines', 'Zobrazit spojovací čáry', 'peaks')
+        self._spin(form, 'label_angle_deg', 'Úhel (stupně)', -180, 180, 'peaks')
+        self._spin(form, 'label_font_size', 'Velikost popisků', 8, 72, 'peaks')
+        self._check(form, 'label_bold', 'Tučné popisky píků', 'peaks')
+        self._check(form, 'label_italic', 'Popisky píků kurzívou', 'peaks')
+        colors = [('Podle spektra', 'trace'), ('Vlastní barva', 'custom')]
+        self._combo(form, 'label_color_mode', 'Barva popisku', colors, 'peaks')
+        self._color(form, 'label_color', 'Vlastní barva popisku', 'peaks')
+        self._combo(form, 'leader_color_mode', 'Barva spojovací čáry', colors, 'peaks')
+        self._color(form, 'leader_color', 'Vlastní barva spojovací čáry', 'peaks')
+        self._spin(form, 'leader_line_width', 'Šířka spojovací čáry', 1, 6, 'peaks')
 
-        form = self._section(layout, 'Export canvas')
-        self._spin(form, 'export_width', 'Width (px)', 300, 8000, step=100)
-        self._spin(form, 'export_height', 'Height (px)', 300, 8000, step=100)
+        form = self._section(layout, 'Plátno exportu')
+        self._spin(form, 'export_width', 'Šířka (px)', 300, 8000, step=100)
+        self._spin(form, 'export_height', 'Výška (px)', 300, 8000, step=100)
         if hasattr(self._state.graphics, 'preview_canvas_size'):
-            self._check(form, 'preview_canvas_size', 'Preview export dimensions')
+            self._check(form, 'preview_canvas_size', 'Zobrazit rozměry exportu v náhledu')
 
     @staticmethod
     def _sync_controls(settings, controls):

@@ -10,9 +10,18 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
-from PySide6.QtGui import QFont, QPalette, QColor  # noqa: E402
+from PySide6.QtGui import QFont  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
+from ui.theme import light_palette  # noqa: E402
+
+
+def configure_application(app: QApplication) -> None:
+    app.setApplicationName("SpecLab Studio")
+    app.setOrganizationName("SpecLab")
+    app.setStyle("Fusion")
+    app.setFont(QFont("Avenir Next" if sys.platform == "darwin" else "Segoe UI", 11))
+    app.setPalette(light_palette(app.style()))
 
 
 def main() -> None:
@@ -27,15 +36,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     app = QApplication([sys.argv[0]])
-    app.setApplicationName("SpecLab Studio")
-    app.setOrganizationName("SpecLab")
-    app.setStyle("Fusion")
-    app.setFont(QFont("Avenir Next" if sys.platform == "darwin" else "Segoe UI", 11))
-    palette = app.palette()
-    palette.setColor(QPalette.ColorRole.Window, QColor("#fafbfb"))
-    palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
-    palette.setColor(QPalette.ColorRole.Text, QColor("#24343c"))
-    app.setPalette(palette)
+    configure_application(app)
     window = MainWindow()
     if args.demo:
         window.load_demo()

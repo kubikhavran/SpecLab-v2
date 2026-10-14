@@ -1,8 +1,9 @@
 """Validated, local spectrum operations shared by manual controls and AI plans.
 
 Plans are plain data; no generated code is evaluated. Each operation consumes
-the previous operation's result. Nonuniform data must be explicitly resampled
-before algorithms defined on equally spaced points.
+the previous operation's result. Smoothing, baseline and despiking work on
+neighbouring points and accept gently varying sampling (recorded in details);
+derivatives need a physical step, so nonuniform data must be resampled first.
 """
 from __future__ import annotations
 
@@ -37,6 +38,10 @@ DEFAULTS = {
 }
 
 
+# Language models sometimes write integers as 11.0; accept exactly integral floats.
+_INTEGER_PARAMS = {'iterations', 'window', 'poly_order', 'order', 'max_width'}
+
+
 def _number(value, name, low=-1e12, high=1e12, integer=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ProcessingError(f'{name} must be a finite number.')
@@ -64,6 +69,10 @@ def validate_operations(operations) -> list[dict]:
         if not isinstance(given, dict) or set(given) - set(DEFAULTS[op]):
             raise ProcessingError(f'Unknown or invalid parameters for {op}.')
         p = copy.deepcopy({**DEFAULTS[op], **given})
+        for key in _INTEGER_PARAMS & set(p):
+            value = p[key]
+            if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+                p[key] = int(value)
         if op == 'baseline':
             _number(p['lam'], 'lam', 1, 1e12)
             _number(p['p'], 'p', 1e-6, 1 - 1e-6)
@@ -119,15 +128,46 @@ def _arrays(x, y):
     return xa.copy(), ya.copy()
 
 
-def _uniform_step(x):
+# Detector-based axes (e.g. Raman CCD pixels converted to cm⁻¹) are monotonic but
+# not exactly equidistant. Point-domain filters are acceptable there, but not across
+# real gaps where neighbouring samples are far apart in X.
+MAX_INDEX_STEP_RATIO = 3.0
+
+
+def _is_uniform(x) -> bool:
     dx = np.diff(x)
-    if not np.allclose(dx, dx[0], rtol=1e-4, atol=abs(dx[0]) * 1e-8):
+    return bool(np.allclose(dx, dx[0], rtol=1e-4, atol=abs(dx[0]) * 1e-8))
+
+
+def _uniform_step(x):
+    if not _is_uniform(x):
         raise ProcessingError('This operation requires equally spaced X values. Resample the spectrum first.')
-    return float(dx[0])
+    return float(np.diff(x)[0])
 
 
-def _filter_ready(x, window):
-    delta = _uniform_step(x)
+def _point_domain_ready(x, detail):
+    """Allow point-domain filters on gently varying sampling; reject gaps."""
+    if _is_uniform(x):
+        detail['sampling'] = 'uniform'
+        return
+    step = np.abs(np.diff(x))
+    # The median of two steps is their mean, which would hide a gap.
+    typical = np.median(step) if len(step) >= 3 else np.min(step)
+    ratio = float(np.max(step) / typical)
+    if ratio > MAX_INDEX_STEP_RATIO:
+        raise ProcessingError(
+            f'X sampling contains a gap ({ratio:.1f}× the typical step). '
+            'Crop the gap or resample the spectrum first.')
+    detail['sampling'] = 'point_index'
+    detail['max_step_ratio'] = ratio
+
+
+def _filter_ready(x, window, detail=None):
+    if detail is None:
+        delta = _uniform_step(x)
+    else:
+        _point_domain_ready(x, detail)
+        delta = None
     if window > len(x):
         raise ProcessingError(f'Window {window} exceeds the {len(x)} available points; choose a smaller odd window.')
     return delta
@@ -154,8 +194,8 @@ def _interpolate(x, y, mask):
     return result
 
 
-def _despike(x, y, params):
-    _filter_ready(x, params['window'])
+def _despike(x, y, params, detail):
+    _filter_ready(x, params['window'], detail)
     output = y.copy()
     removed = np.zeros(len(y), dtype=bool)
     for _ in range(params['iterations']):
@@ -193,7 +233,8 @@ def run_operations(x, y, meta, operations) -> dict:
         op, p = item['op'], item['params']
         detail = copy.deepcopy(item)
         if op == 'baseline':
-            _uniform_step(x)
+            # AsLS penalises second differences between neighbouring points.
+            _point_domain_ready(x, detail)
             if len(x) < 3:
                 raise ProcessingError('Baseline correction needs at least three points.')
             baseline = asls_baseline(y, lam=p['lam'], p=p['p'], n_iter=p['iterations'])
@@ -205,10 +246,10 @@ def run_operations(x, y, meta, operations) -> dict:
             else:
                 _derived(meta, 'baseline', meta.get('y_unit', 'a.u.'))
         elif op == 'smooth':
-            _filter_ready(x, p['window'])
+            _filter_ready(x, p['window'], detail)
             y = savgol_filter(y, window_length=p['window'], polyorder=p['poly_order'])
         elif op == 'despike':
-            y, detail['removed_count'] = _despike(x, y, p)
+            y, detail['removed_count'] = _despike(x, y, p, detail)
         elif op == 'normalize':
             method = p['method']
             if method == 'minmax':

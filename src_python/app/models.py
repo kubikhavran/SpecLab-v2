@@ -204,6 +204,14 @@ SPECTRAL_MODES: Dict[str, SpectralModeDefaults] = {
     ),
 }
 
+# Figure axis vocabulary (publication English); UI controls stay localized.
+AXIS_Y_LABELS: Dict[str, str] = {
+    "intensity": "Intensity (a.u.)",
+    "absorbance": "Absorbance",
+    "transmittance_percent": "Transmittance (%)",
+    "transmittance_fraction": "Transmittance",
+}
+
 SPECTRAL_MODE_LABELS: Dict[str, str] = {
     "raman": "Raman",
     "infrared": "Infrared (IR)",

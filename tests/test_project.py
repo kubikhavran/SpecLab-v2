@@ -20,7 +20,7 @@ class ProjectTests(unittest.TestCase):
                                    'api_key': 'PRIVATE', 'vendor': {'token': 'PRIVATE', 'instrument': 'test'}})
         self.state.add_spectrum(self.spec)
         self.state.peaks_manual[self.spec.id] = [Peak(x=2, label='Sample label', source='manual')]
-        self.state.set_peak_label_position(self.spec.id, self.state.peaks_manual[self.spec.id][0].id, 2.2, 5)
+        self.state.set_peak_label_offset(self.spec.id, self.state.peaks_manual[self.spec.id][0].id, 0.2, 5)
         self.state.apply_operations([{'op': 'shift', 'params': {'y': 1}}], source='ai')
         self.state.set_graphics(x_label='Wavelength (nm)', palette='viridis')
 
@@ -35,7 +35,7 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(other.active_spectrum.y, [2, 3, 4])
         self.assertEqual(other.original_data(self.spec.id), ([1, 2, 3], [1, 2, 3]))
         self.assertEqual(other.peaks_manual[self.spec.id][0].label, 'Sample label')
-        self.assertEqual(other.active_spectrum.meta['peak_label_positions'][other.peaks_manual[self.spec.id][0].id], [2.2, 5])
+        self.assertEqual(other.active_spectrum.meta['peak_label_offsets'][other.peaks_manual[self.spec.id][0].id], [0.2, 5])
         self.assertEqual(other.graphics.x_label, 'Wavelength (nm)')
         self.assertEqual(other.history[-1]['source'], 'ai')
         self.assertFalse(other.can_undo)

@@ -5,7 +5,6 @@ Equivalent of PeaksPanel.tsx.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,7 +12,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QSlider,
     QSpinBox,
     QDoubleSpinBox,
     QVBoxLayout,
@@ -39,33 +37,36 @@ class PeaksPanel(QWidget):
         layout.setSpacing(4)
 
         # Enable peaks checkbox
-        self._chk_enabled = QCheckBox("Enable peaks")
+        self._chk_enabled = QCheckBox("Zapnout detekci píků")
         layout.addWidget(self._chk_enabled)
 
         # Mode: active / all
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Mode:"))
+        mode_row.addWidget(QLabel("Režim:"))
         self._combo_mode = QComboBox()
-        self._combo_mode.addItems(["active", "all"])
+        self._combo_mode.addItem("Aktivní spektrum", "active")
+        self._combo_mode.addItem("Všechna spektra", "all")
         mode_row.addWidget(self._combo_mode)
         layout.addLayout(mode_row)
 
         # Polarity: max / min / both
         pol_row = QHBoxLayout()
-        pol_row.addWidget(QLabel("Polarity:"))
+        pol_row.addWidget(QLabel("Polarita:"))
         self._combo_polarity = QComboBox()
-        self._combo_polarity.addItems(["max", "min", "both"])
+        self._combo_polarity.addItem("Maxima", "max")
+        self._combo_polarity.addItem("Minima", "min")
+        self._combo_polarity.addItem("Maxima i minima", "both")
         self._combo_polarity.setToolTip(
-            "max = peaks (Raman, UV-Vis)\n"
-            "min = dips (IR transmittance)\n"
-            "both = peaks and dips"
+            "Maxima = píky (Raman, UV–Vis)\n"
+            "Minima = poklesy (IR – transmitance)\n"
+            "Obojí = píky i poklesy"
         )
         pol_row.addWidget(self._combo_polarity)
         layout.addLayout(pol_row)
 
         # Min prominence
         prom_row = QHBoxLayout()
-        prom_row.addWidget(QLabel("Min prominence:"))
+        prom_row.addWidget(QLabel("Min. prominence:"))
         self._prom_spin = QDoubleSpinBox()
         self._prom_spin.setDecimals(8)
         self._prom_spin.setRange(0, 1e12)
@@ -74,17 +75,17 @@ class PeaksPanel(QWidget):
         prom_row.addWidget(self._prom_spin)
         layout.addLayout(prom_row)
 
-        self._chk_mixed = QCheckBox('Automatic settings for mixed Y types')
+        self._chk_mixed = QCheckBox('Automatické nastavení pro různé typy Y')
         self._chk_mixed.setToolTip(
-            'For a mixed batch, use absorbance prominence 0.01, fractional transmittance 0.05, '
-            'percent transmittance 5, and intensity 20 with matching polarity. '
-            'Disable to use your prominence and polarity for every spectrum. Both stays both.'
+            'U smíšené dávky použije prominence 0,01 pro absorbanci, 0,05 pro transmitanci (0–1), '
+            '5 pro transmitanci v procentech a 20 pro intenzitu, vždy s odpovídající polaritou. '
+            'Vypnutím použijete zadanou prominence a polaritu pro všechna spektra. Volba obojí zůstává obojí.'
         )
         layout.addWidget(self._chk_mixed)
 
         # Min distance (X units)
         dist_row = QHBoxLayout()
-        dist_row.addWidget(QLabel("Min distance:"))
+        dist_row.addWidget(QLabel("Min. vzdálenost:"))
         self._dist_spin = QDoubleSpinBox()
         self._dist_spin.setDecimals(6)
         self._dist_spin.setRange(0, 1e12)
@@ -92,16 +93,16 @@ class PeaksPanel(QWidget):
         dist_row.addWidget(self._dist_spin)
         layout.addLayout(dist_row)
 
-        self._chk_region = QCheckBox('Limit detection to X range')
-        self._chk_region.setToolTip('Enable to seed the range from current plot bounds, then edit the limits.')
+        self._chk_region = QCheckBox('Omezit hledání na rozsah X')
+        self._chk_region.setToolTip('Zapnutím předvyplníte rozsah podle aktuálních mezí grafu, které pak můžete upravit.')
         layout.addWidget(self._chk_region)
         region_row = QHBoxLayout()
-        region_row.addWidget(QLabel('X min:'))
+        region_row.addWidget(QLabel('Min. X:'))
         self._region_min = QDoubleSpinBox()
         self._region_min.setDecimals(6)
         self._region_min.setRange(-1e12, 1e12)
         region_row.addWidget(self._region_min)
-        region_row.addWidget(QLabel('X max:'))
+        region_row.addWidget(QLabel('Max. X:'))
         self._region_max = QDoubleSpinBox()
         self._region_max.setDecimals(6)
         self._region_max.setRange(-1e12, 1e12)
@@ -110,7 +111,7 @@ class PeaksPanel(QWidget):
 
         # Max peaks
         mp_row = QHBoxLayout()
-        mp_row.addWidget(QLabel("Max peaks:"))
+        mp_row.addWidget(QLabel("Max. počet píků:"))
         self._mp_spin = QSpinBox()
         self._mp_spin.setRange(1, 200)
         self._mp_spin.setValue(20)
@@ -119,7 +120,7 @@ class PeaksPanel(QWidget):
 
         # Decimals for labels
         dec_row = QHBoxLayout()
-        dec_row.addWidget(QLabel("Decimals:"))
+        dec_row.addWidget(QLabel("Desetinná místa:"))
         self._dec_spin = QSpinBox()
         self._dec_spin.setRange(0, 4)
         self._dec_spin.setValue(0)
@@ -127,39 +128,39 @@ class PeaksPanel(QWidget):
         layout.addLayout(dec_row)
 
         # Show markers / labels
-        self._chk_markers = QCheckBox("Show markers")
+        self._chk_markers = QCheckBox("Zobrazit značky")
         self._chk_markers.setChecked(True)
         layout.addWidget(self._chk_markers)
 
-        self._chk_labels = QCheckBox("Show labels")
+        self._chk_labels = QCheckBox("Zobrazit popisky")
         self._chk_labels.setChecked(True)
         layout.addWidget(self._chk_labels)
 
         # Manual pick toggle
-        self._chk_manual = QCheckBox("Manual pick (click on plot)")
+        self._chk_manual = QCheckBox("Ruční výběr (kliknutím do grafu)")
         self._chk_manual.setToolTip(
-            "Ctrl+click on the plot to add a peak.\n"
-            "Shift+click near a peak label to remove it.\n"
-            "Plain click selects the nearest spectrum."
+            "Ctrl+kliknutím do grafu přidáte pík.\n"
+            "Shift+kliknutím poblíž popisku pík odstraníte.\n"
+            "Běžným kliknutím vyberete nejbližší spektrum."
         )
         layout.addWidget(self._chk_manual)
 
         # Buttons
         btn1 = QHBoxLayout()
-        self._btn_detect = QPushButton("Detect peaks")
-        self._btn_clear = QPushButton("Clear peaks")
+        self._btn_detect = QPushButton("Najít píky")
+        self._btn_clear = QPushButton("Vymazat píky")
         btn1.addWidget(self._btn_detect)
         btn1.addWidget(self._btn_clear)
         layout.addLayout(btn1)
 
         btn2 = QHBoxLayout()
-        self._btn_detect_all = QPushButton("Detect ALL")
+        self._btn_detect_all = QPushButton("Najít píky ve všech")
         self._btn_detect_all.setToolTip(
-            'Mixed ordinate types use per-spectrum defaults: absorbance maxima / 0.01, '
-            'fractional transmittance minima / 0.05, percent transmittance minima / 5, '
-            'intensity maxima / 20. Both polarity remains both. Homogeneous scope uses your settings.'
+            'Pro různé typy Y se použije výchozí nastavení pro každé spektrum: maxima absorbance / 0,01, '
+            'minima transmitance (0–1) / 0,05, minima transmitance v procentech / 5, '
+            'maxima intenzity / 20. Polarita obojí zůstává obojí. U stejného typu se použije vaše nastavení.'
         )
-        self._btn_clear_all = QPushButton("Clear ALL")
+        self._btn_clear_all = QPushButton("Vymazat všechny")
         btn2.addWidget(self._btn_detect_all)
         btn2.addWidget(self._btn_clear_all)
         layout.addLayout(btn2)
@@ -171,9 +172,11 @@ class PeaksPanel(QWidget):
 
     def _connect_signals(self) -> None:
         self._chk_enabled.toggled.connect(lambda c: self._state.set_peaks(enabled=c))
-        self._combo_mode.currentTextChanged.connect(lambda t: self._state.set_peaks(mode=t))
-        self._combo_polarity.currentTextChanged.connect(
-            lambda t: self._state.set_peaks(polarity=t)
+        self._combo_mode.currentIndexChanged.connect(
+            lambda: self._state.set_peaks(mode=self._combo_mode.currentData())
+        )
+        self._combo_polarity.currentIndexChanged.connect(
+            lambda: self._state.set_peaks(polarity=self._combo_polarity.currentData())
         )
         self._prom_spin.valueChanged.connect(lambda v: self._state.set_peaks(min_prominence=v))
         self._chk_mixed.toggled.connect(lambda checked: self._state.set_peaks(mixed_defaults=checked))
@@ -218,8 +221,8 @@ class PeaksPanel(QWidget):
             w.blockSignals(True)
         try:
             self._chk_enabled.setChecked(p.enabled)
-            self._combo_mode.setCurrentText(p.mode)
-            self._combo_polarity.setCurrentText(p.polarity)
+            self._combo_mode.setCurrentIndex(self._combo_mode.findData(p.mode))
+            self._combo_polarity.setCurrentIndex(self._combo_polarity.findData(p.polarity))
             self._prom_spin.setValue(p.min_prominence)
             self._chk_mixed.setChecked(p.mixed_defaults)
             self._dist_spin.setValue(p.min_distance)
@@ -256,7 +259,7 @@ class PeaksPanel(QWidget):
     def _on_region_limits(self) -> None:
         lower, upper = self._region_min.value(), self._region_max.value()
         if lower >= upper:
-            self._info.setText('X minimum must be smaller than maximum.')
+            self._info.setText('Minimální hodnota X musí být menší než maximální.')
             return
         self._state.set_peaks(x_min=lower, x_max=upper)
 
@@ -266,11 +269,11 @@ class PeaksPanel(QWidget):
         try:
             count = self._state.detect_spectrum_peaks(ids)
             kinds = {spec.meta.get('y_kind', 'intensity') for spec in self._state.spectra if spec.id in ids}
-            suffix = (' · mixed Y types: per-spectrum defaults' if len(kinds) > 1
+            suffix = (' · různé typy Y: výchozí nastavení pro každé spektrum' if len(kinds) > 1
                       and self._state.peaks_settings.mixed_defaults else '')
-            self._info.setText(f"Detected: {count} peaks{suffix}")
+            self._info.setText(f"Nalezeno píků: {count}{suffix}")
         except ValueError as error:
-            QMessageBox.warning(self, "Peak detection could not run", str(error))
+            QMessageBox.warning(self, "Detekci píků nelze spustit", str(error))
 
     def _on_detect(self) -> None:
         spec = self._state.active_spectrum
@@ -296,31 +299,24 @@ class PeaksPanel(QWidget):
         spec = self._state.active_spectrum
         if spec is not None:
             self._state.add_manual_peak(spec.id, x)
-            self._info.setText(f"Manual peak added at x={x:.1f}")
+            self._info.setText(f"Ruční pík přidán na x={x:.1f}")
 
-    def remove_nearest_peak(self, x: float) -> None:
-        """Remove the peak nearest to X on the active spectrum (Shift+click)."""
+    def remove_nearest_peak(self, x: float, tolerance: float | None = None) -> bool:
+        """Remove the active spectrum's peak nearest to X (Shift+click).
+
+        Only a peak within ``tolerance`` (X units) is removed, so a stray click
+        far from any peak never deletes one.
+        """
         spec = self._state.active_spectrum
         if spec is None:
-            return
-
-        # Search both auto and manual peaks
-        best_dist = float("inf")
-        best_id = None
-        best_source = None
-
-        for source_name, store in [("auto", self._state.peaks_auto), ("manual", self._state.peaks_manual)]:
-            peaks = store.get(spec.id, [])
-            for peak in peaks:
-                d = abs(peak.x - x)
-                if d < best_dist:
-                    best_dist = d
-                    best_id = peak.id
-                    best_source = source_name
-
-        if best_id is None:
-            return
-
-        self._state.remove_peak(spec.id, best_id)
-
-        self._info.setText(f"Peak removed near x={x:.1f}")
+            return False
+        peaks = self._state.peaks_auto.get(spec.id, []) + self._state.peaks_manual.get(spec.id, [])
+        if not peaks:
+            return False
+        nearest = min(peaks, key=lambda peak: abs(peak.x - x))
+        if tolerance is not None and abs(nearest.x - x) > tolerance:
+            self._info.setText("V místě kliknutí není žádný pík.")
+            return False
+        self._state.remove_peak(spec.id, nearest.id)
+        self._info.setText(f"Pík odstraněn poblíž x={x:.1f}")
+        return True

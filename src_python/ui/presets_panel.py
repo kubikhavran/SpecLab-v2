@@ -49,12 +49,12 @@ class PresetsPanel(QWidget):
         layout.setSpacing(4)
 
         row1 = QHBoxLayout()
-        self._btn_save_new = QPushButton("Save current as...")
-        self._btn_save_new.setToolTip("Save current settings as a new preset")
+        self._btn_save_new = QPushButton("Uložit aktuální jako…")
+        self._btn_save_new.setToolTip("Uložit aktuální nastavení jako novou předvolbu")
         row1.addWidget(self._btn_save_new)
 
-        self._btn_update = QPushButton("Update selected")
-        self._btn_update.setToolTip("Overwrite the selected preset with current settings")
+        self._btn_update = QPushButton("Aktualizovat vybranou")
+        self._btn_update.setToolTip("Přepsat vybranou předvolbu aktuálním nastavením")
         self._btn_update.setEnabled(False)
         row1.addWidget(self._btn_update)
         layout.addLayout(row1)
@@ -65,27 +65,27 @@ class PresetsPanel(QWidget):
         layout.addWidget(self._list)
 
         row2 = QHBoxLayout()
-        self._btn_apply = QPushButton("Apply")
-        self._btn_apply.setToolTip("Apply settings and replay the saved active-spectrum recipe from original data; undo is available")
+        self._btn_apply = QPushButton("Použít")
+        self._btn_apply.setToolTip("Použít nastavení a znovu provést uložený postup pro aktivní spektrum z původních dat; změnu lze vrátit.")
         self._btn_apply.setEnabled(False)
         row2.addWidget(self._btn_apply)
 
-        self._btn_rename = QPushButton("Rename")
+        self._btn_rename = QPushButton("Přejmenovat")
         self._btn_rename.setEnabled(False)
         row2.addWidget(self._btn_rename)
 
-        self._btn_delete = QPushButton("Delete")
+        self._btn_delete = QPushButton("Smazat")
         self._btn_delete.setEnabled(False)
         row2.addWidget(self._btn_delete)
         layout.addLayout(row2)
 
         row3 = QHBoxLayout()
-        self._btn_export = QPushButton("Export presets...")
-        self._btn_export.setToolTip("Export all presets to a JSON file")
+        self._btn_export = QPushButton("Exportovat předvolby…")
+        self._btn_export.setToolTip("Exportovat všechny předvolby do souboru JSON")
         row3.addWidget(self._btn_export)
 
-        self._btn_import = QPushButton("Import presets...")
-        self._btn_import.setToolTip("Import presets from a JSON file")
+        self._btn_import = QPushButton("Importovat předvolby…")
+        self._btn_import.setToolTip("Importovat předvolby ze souboru JSON")
         row3.addWidget(self._btn_import)
         layout.addLayout(row3)
 
@@ -131,7 +131,7 @@ class PresetsPanel(QWidget):
         save_presets(self._presets)
 
     def _on_save_new(self) -> None:
-        name, ok = QInputDialog.getText(self, "Save preset", "Preset name:")
+        name, ok = QInputDialog.getText(self, "Uložit předvolbu", "Název předvolby:")
         if not ok or not name.strip():
             return
         payload = capture_preset_payload(self._state)
@@ -140,7 +140,7 @@ class PresetsPanel(QWidget):
         self._persist()
         self._refresh_list()
         self._list.setCurrentRow(len(self._presets) - 1)
-        self._info.setText(f"Saved: {preset.name}")
+        self._info.setText(f"Uloženo: {preset.name}")
 
     def _on_update(self) -> None:
         preset = self._selected_preset()
@@ -151,7 +151,7 @@ class PresetsPanel(QWidget):
 
         preset.updated_at = datetime.now().isoformat()
         self._persist()
-        self._info.setText(f"Updated: {preset.name}")
+        self._info.setText(f"Aktualizováno: {preset.name}")
 
     def _on_apply(self, *_args) -> None:
         preset = self._selected_preset()
@@ -160,23 +160,23 @@ class PresetsPanel(QWidget):
         try:
             apply_preset_payload(self._state, preset.payload)
         except (ValueError, ArithmeticError) as error:
-            self._info.setText(f"Preset could not be applied: {error}")
+            self._info.setText(f"Předvolbu nelze použít: {error}")
             return
-        self._info.setText(f"Applied: {preset.name}")
+        self._info.setText(f"Použito: {preset.name}")
 
     def _on_rename(self) -> None:
         preset = self._selected_preset()
         if preset is None:
             return
         name, ok = QInputDialog.getText(
-            self, "Rename preset", "New name:", text=preset.name
+            self, "Přejmenovat předvolbu", "Nový název:", text=preset.name
         )
         if not ok or not name.strip():
             return
         preset.name = name.strip()
         self._persist()
         self._refresh_list()
-        self._info.setText(f"Renamed to: {preset.name}")
+        self._info.setText(f"Přejmenováno na: {preset.name}")
 
     def _on_delete(self) -> None:
         preset = self._selected_preset()
@@ -184,8 +184,8 @@ class PresetsPanel(QWidget):
             return
         reply = QMessageBox.question(
             self,
-            "Delete preset",
-            f"Delete preset '{preset.name}'?",
+            "Smazat předvolbu",
+            f"Smazat předvolbu „{preset.name}“?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -193,43 +193,43 @@ class PresetsPanel(QWidget):
         self._presets = [p for p in self._presets if p.id != preset.id]
         self._persist()
         self._refresh_list()
-        self._info.setText(f"Deleted: {preset.name}")
+        self._info.setText(f"Smazáno: {preset.name}")
 
     def _on_export(self) -> None:
         if not self._presets:
-            self._info.setText("No presets to export")
+            self._info.setText("Žádné předvolby k exportu")
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export presets",
+            "Exportovat předvolby",
             "speclab_presets.json",
-            "JSON files (*.json)",
+            "Soubory JSON (*.json)",
         )
         if not path:
             return
         try:
             export_presets_to_file(self._presets, path)
-            self._info.setText(f"Exported {len(self._presets)} presets")
+            self._info.setText(f"Exportováno předvoleb: {len(self._presets)}")
         except OSError as e:
-            self._info.setText(f"Error: {e}")
+            self._info.setText(f"Chyba: {e}")
 
     def _on_import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Import presets",
+            "Importovat předvolby",
             "",
-            "JSON files (*.json)",
+            "Soubory JSON (*.json)",
         )
         if not path:
             return
         try:
             imported = import_presets_from_file(path)
             if not imported:
-                self._info.setText("No valid presets found in file")
+                self._info.setText("V souboru nebyly nalezeny žádné platné předvolby")
                 return
             self._presets.extend(imported)
             self._persist()
             self._refresh_list()
-            self._info.setText(f"Imported {len(imported)} presets")
+            self._info.setText(f"Importováno předvoleb: {len(imported)}")
         except (json.JSONDecodeError, OSError) as e:
-            self._info.setText(f"Error: {e}")
+            self._info.setText(f"Chyba: {e}")

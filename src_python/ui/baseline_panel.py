@@ -39,7 +39,7 @@ class BaselinePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self._chk_overlay = QCheckBox("Show baseline overlay")
+        self._chk_overlay = QCheckBox("Zobrazit baseline v grafu")
         self._chk_overlay.setChecked(True)
         layout.addWidget(self._chk_overlay)
 
@@ -70,7 +70,7 @@ class BaselinePanel(QWidget):
         layout.addWidget(self._p_slider)
 
         iter_row = QHBoxLayout()
-        iter_row.addWidget(QLabel("Iterations:"))
+        iter_row.addWidget(QLabel("Iterace:"))
         self._iter_label = QLabel("10")
         iter_row.addStretch()
         iter_row.addWidget(self._iter_label)
@@ -82,15 +82,15 @@ class BaselinePanel(QWidget):
         layout.addWidget(self._iter_slider)
 
         btn_row1 = QHBoxLayout()
-        self._btn_apply = QPushButton("Apply baseline")
-        self._btn_reset = QPushButton("Reset baseline")
+        self._btn_apply = QPushButton("Odečíst baseline")
+        self._btn_reset = QPushButton("Vrátit baseline")
         btn_row1.addWidget(self._btn_apply)
         btn_row1.addWidget(self._btn_reset)
         layout.addLayout(btn_row1)
 
         btn_row2 = QHBoxLayout()
-        self._btn_apply_all = QPushButton("Apply ALL")
-        self._btn_reset_all = QPushButton("Reset ALL")
+        self._btn_apply_all = QPushButton("Použít na vše")
+        self._btn_reset_all = QPushButton("Vrátit u všech")
         btn_row2.addWidget(self._btn_apply_all)
         btn_row2.addWidget(self._btn_reset_all)
         layout.addLayout(btn_row2)
@@ -163,7 +163,7 @@ class BaselinePanel(QWidget):
             proposal = self._state.preview_operations([self._operation()], ids)
             self._state.apply_preview(proposal)
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be applied", str(error))
+            QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
     def _reset(self, ids: list[str]) -> None:
         if not ids:
@@ -171,7 +171,7 @@ class BaselinePanel(QWidget):
         try:
             self._state.reset_operation('baseline', ids)
         except (ValueError, ArithmeticError) as error:
-            QMessageBox.warning(self, "Processing could not be reset", str(error))
+            QMessageBox.warning(self, "Zpracování nelze vrátit", str(error))
 
     def _on_apply(self) -> None:
         spec = self._state.active_spectrum

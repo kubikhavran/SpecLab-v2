@@ -1,5 +1,33 @@
 """A restrained, shared visual system for the native laboratory workspace."""
 
+from pathlib import Path
+
+from PySide6.QtGui import QColor, QPalette
+
+_CHECK_ICON = (Path(__file__).resolve().parent / "assets" / "check.svg").as_posix()
+
+
+def light_palette(style) -> QPalette:
+    """Fixed light palette so a dark system appearance cannot leak into the UI."""
+    palette = style.standardPalette()
+    for role, color in {
+        QPalette.ColorRole.Window: "#fafbfb",
+        QPalette.ColorRole.WindowText: "#24343c",
+        QPalette.ColorRole.Base: "#ffffff",
+        QPalette.ColorRole.AlternateBase: "#f7fafa",
+        QPalette.ColorRole.Text: "#24343c",
+        QPalette.ColorRole.Button: "#ffffff",
+        QPalette.ColorRole.ButtonText: "#24343c",
+        QPalette.ColorRole.ToolTipBase: "#ffffff",
+        QPalette.ColorRole.ToolTipText: "#24343c",
+        QPalette.ColorRole.PlaceholderText: "#8a9ba0",
+        QPalette.ColorRole.Highlight: "#14756f",
+        QPalette.ColorRole.HighlightedText: "#ffffff",
+    }.items():
+        palette.setColor(role, QColor(color))
+    return palette
+
+
 STYLESHEET = """
 QWidget { color: #24343c; font-family: 'Avenir Next', 'Segoe UI', sans-serif; font-size: 12px; }
 QMainWindow, QWidget#workspace { background: #f5f7f7; }
@@ -43,6 +71,12 @@ QTableWidget { background: white; alternate-background-color: #f7fafa; border: n
 QHeaderView::section { background: #f3f7f7; color: #657b81; border: none; padding: 7px; font-weight: 600; }
 QStatusBar { background: #edf3f3; color: #5e747a; border-top: 1px solid #dce7e7; }
 QCheckBox { spacing: 7px; padding: 3px 0; }
+QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #a9bcbf; border-radius: 4px; background: white; }
+QCheckBox::indicator:hover { border-color: #14756f; }
+QCheckBox::indicator:checked { background: #14756f; border-color: #14756f; image: url("__CHECK_ICON__"); }
+QCheckBox::indicator:disabled { background: #eef2f2; border-color: #d5dfe0; }
+QCheckBox::indicator:checked:disabled { background: #b5cac7; border-color: #b5cac7; }
+QToolTip { color: #24343c; background: white; border: 1px solid #dce4e5; }
 QSlider::groove:horizontal { height: 4px; background: #dce7e7; border-radius: 2px; }
 QSlider::handle:horizontal { width: 12px; margin: -4px 0; background: #14756f; border-radius: 6px; }
-"""
+""".replace("__CHECK_ICON__", _CHECK_ICON)

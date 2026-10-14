@@ -36,11 +36,14 @@ class ProcessingPanel(QWidget):
         layout.addWidget(self.tool)
         form = QFormLayout()
         self.method = QComboBox()
-        self.method.addItems(["max", "vector", "area", "minmax"])
+        self.method.addItem("Maximum = 1", "max")
+        self.method.addItem("Vektorová norma", "vector")
+        self.method.addItem("Plocha = 1", "area")
+        self.method.addItem("Min–max (0–1)", "minmax")
         self.target = QComboBox()
-        self.target.addItems(
-            ["absorbance", "transmittance_percent", "transmittance_fraction"]
-        )
+        self.target.addItem("Absorbance", "absorbance")
+        self.target.addItem("Transmitance (%)", "transmittance_percent")
+        self.target.addItem("Transmitance (0–1)", "transmittance_fraction")
         self.order = QSpinBox()
         self.order.setRange(1, 2)
         self.window = QSpinBox()
@@ -140,7 +143,7 @@ class ProcessingPanel(QWidget):
 
     def _operation(self):
         return [
-            {"op": "normalize", "params": {"method": self.method.currentText()}},
+            {"op": "normalize", "params": {"method": self.method.currentData()}},
             {
                 "op": "derivative",
                 "params": {
@@ -149,7 +152,7 @@ class ProcessingPanel(QWidget):
                     "poly_order": 3,
                 },
             },
-            {"op": "convert_y", "params": {"target": self.target.currentText()}},
+            {"op": "convert_y", "params": {"target": self.target.currentData()}},
             {
                 "op": "crop",
                 "params": {"min": self.low.value(), "max": self.high.value()},
@@ -180,7 +183,7 @@ class ProcessingPanel(QWidget):
             self.status.setText(str(exc))
 
     def _sync(self):
-        preview = self.state.preview
+        preview = self.state.preview_summary
         self.apply_button.setEnabled(
             bool(
                 preview
@@ -191,7 +194,7 @@ class ProcessingPanel(QWidget):
 
     def _apply(self):
         try:
-            self.state.apply_preview(self.state.preview)
+            self.state.apply_preview()
             self.status.setText("Úprava uložena do historie.")
         except ValueError as exc:
             self.status.setText(str(exc))

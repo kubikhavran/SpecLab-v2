@@ -5,7 +5,7 @@ Replaces the manual JS implementation in detectPeaks.ts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from bisect import bisect_left, insort
 from typing import List, Optional
 

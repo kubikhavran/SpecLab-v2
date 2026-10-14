@@ -8,7 +8,14 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from app.models import AXIS_Y_LABELS
+from app.state import LABEL_OFFSETS
 from core.palettes import get_color_for_index, get_palette_colors
+
+# Automatic Y labels (current and earlier versions) may follow the active ordinate.
+_AUTOMATIC_Y_LABELS = set(AXIS_Y_LABELS.values()) | {
+    "Y", "Intenzita (a.u.)", "Transmitance (%)", "Transmitance (0–1)",
+}
 
 
 def axis_html(text):
@@ -50,7 +57,7 @@ class _PeakLabel(pg.TextItem):
                 [self.origin[0], self.pos().x()], [self.origin[1], self.pos().y()]
             )
         if event.isFinish():
-            self.callback(self.pos().x(), self.pos().y())
+            self.callback(self.pos().x() - self.origin[0], self.pos().y() - self.origin[1])
 
     def mouseClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -279,9 +286,8 @@ class SpectrumPlotWidget(QWidget):
                 continue
             text = peak.label or f"{px:.{settings.decimals}f}"
             span = max(float(np.ptp(y)), 1e-6)
-            label_pos = spec.meta.get("peak_label_positions", {}).get(
-                peak.id, (px, py + span * 0.07)
-            )
+            dx, dy = spec.meta.get(LABEL_OFFSETS, {}).get(peak.id, (0.0, span * 0.07))
+            label_pos = (px + dx, py + dy)
             leader = None
             if settings.show_leader_lines:
                 leader_color = (
@@ -302,8 +308,8 @@ class SpectrumPlotWidget(QWidget):
                 text,
                 text_color,
                 (px, py),
-                lambda lx, ly, sid=spec.id, pid=peak.id: (
-                    self._state.set_peak_label_position(sid, pid, lx, ly)
+                lambda dx, dy, sid=spec.id, pid=peak.id: (
+                    self._state.set_peak_label_offset(sid, pid, dx, dy)
                 ),
                 lambda sid=spec.id, pid=peak.id: self._state.remove_peak(sid, pid),
                 leader=leader,
@@ -353,27 +359,12 @@ class SpectrumPlotWidget(QWidget):
         pi.setLabel("bottom", axis_html(g.x_label), **style)
         y_label = g.y_label
         active = self._state.active_spectrum
-        default_y_labels = {
-            "Y",
-            "Intenzita (a.u.)",
-            "Absorbance",
-            "Transmitance (%)",
-            "Transmitance (0–1)",
-            "Intensity (a.u.)",
-            "Transmittance (%)",
-        }
-        if active and y_label in default_y_labels:
-            kinds = {
-                "intensity": "Intenzita (a.u.)",
-                "absorbance": "Absorbance",
-                "transmittance_percent": "Transmitance (%)",
-                "transmittance_fraction": "Transmitance (0–1)",
-            }
-            y_label = kinds.get(active.meta.get("y_kind"), y_label)
+        if active and y_label in _AUTOMATIC_Y_LABELS:
+            y_label = AXIS_Y_LABELS.get(active.meta.get("y_kind"), y_label)
             if active.meta.get("ordinate_processing", "").startswith("derivative"):
-                y_label = f"Derivace ({active.meta.get('y_unit', 'a.u.')})"
+                y_label = f"Derivative ({active.meta.get('y_unit', 'a.u.')})"
             elif active.meta.get("ordinate_processing", "").startswith("normalize"):
-                y_label = "Normalizovaná intenzita (a.u.)"
+                y_label = "Normalized intensity (a.u.)"
         pi.setLabel("left", axis_html(y_label), **style)
         for name in ("bottom", "left", "top", "right"):
             axis = pi.getAxis(name)
@@ -435,7 +426,8 @@ class SpectrumPlotWidget(QWidget):
                 self._peaks_panel.add_manual_peak(point.x())
                 return
             if modifiers & Qt.KeyboardModifier.ShiftModifier:
-                self._peaks_panel.remove_nearest_peak(point.x())
+                low, high = view.viewRange()[0]
+                self._peaks_panel.remove_nearest_peak(point.x(), 0.015 * abs(high - low))
                 return
         if self._state.plot.show_all_spectra:
             candidates = []
@@ -445,10 +437,11 @@ class SpectrumPlotWidget(QWidget):
                     <= point.x()
                     <= max(spec.x[0], spec.x[-1])
                 ):
-                    y = (
-                        np.interp(point.x(), spec.x, self._state.displayed_y(spec.id))
-                        + index * self._state.plot.stack_offset
-                    )
+                    xs = np.asarray(spec.x)
+                    ys = np.asarray(self._state.displayed_y(spec.id))
+                    if xs[0] > xs[-1]:  # np.interp needs ascending X
+                        xs, ys = xs[::-1], ys[::-1]
+                    y = np.interp(point.x(), xs, ys) + index * self._state.plot.stack_offset
                     candidates.append((abs(y - point.y()), spec.id))
             if candidates:
                 self._state.set_active_spectrum(min(candidates)[1])

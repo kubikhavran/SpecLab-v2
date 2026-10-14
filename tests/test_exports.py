@@ -88,7 +88,8 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual(rows[1]['spectrum'], spec.name)
                 self.assertEqual(rows[1]['label'], 'C=O; "sharp"\nnext')
                 self.assertEqual(rows[1]['source'], 'A')
-                parse_number = lambda value: float(value.replace(',', '.'))
+                def parse_number(value):
+                    return float(value.replace(',', '.'))
                 self.assertEqual(parse_number(rows[1]['y']), spec.y[1])
                 self.assertAlmostEqual(parse_number(rows[0]['y']), (spec.y[1] + spec.y[2]) / 2)
                 self.assertEqual(parse_number(rows[1]['prominence']), 0.12345)
