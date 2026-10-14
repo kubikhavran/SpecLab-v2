@@ -24,13 +24,14 @@ python3 src_python/main.py soubor1.txt soubor2.wdf
 
 ## Podporované formáty
 
-- **TXT, CSV, TSV, DAT, ASC, XY, DPT:** vícesloupcový import; první sloupec je X a každý další sloupec Y samostatného spektra. Podporuje citované CSV, desetinnou čárku u oddělovače středník/tabulátor/mezera a kódování UTF-8/UTF-16 s fallbackem CP1250. Chybné číselné řádky se odmítají; nejsou podporovány prokládané dvojice X/Y ani automatické odstraňování chybějících hodnot.
+- **TXT, CSV, TSV, DAT, ASC, XY, DPT:** vícesloupcový import; první sloupec je X a každý další sloupec Y samostatného spektra. Podporuje citované CSV, desetinnou čárku u oddělovače středník/tabulátor/mezera a kódování UTF-8/UTF-16 s fallbackem CP1250. Chybné číselné řádky se odmítají (jen poškozený poslední řádek, typický pro přerušený export, se vynechá s upozorněním); nejsou podporovány prokládané dvojice X/Y ani automatické odstraňování chybějících hodnot. Dlouhý formát exportu WiRE (`#Time/#X #Y #Wave #Intensity`) se rozdělí na jednotlivá spektra série podle času či polohy.
 - **WDF (Renishaw, WDF1):** základní float32 spektra se sdílenou osou, série a mapovací původní souřadnice. Multitrack, XYXY a filter images jsou odmítnuty; obrázky a fitované výsledky se neimportují.
 - **SPA (Thermo OMNIC):** čte primární spektrum při shodě hlavičky a délky dat. Popisky píků přebírá přesně z OMNIC (popisky zobrazené na spektru, jinak tabulka FIND PEAKS); historii úprav ani jiné texty souboru za píky nepovažuje. Oblasti vymazané v OMNIC (NaN, např. pásy nosné fólie) se načtou jako mezery a jejich rozsahy se uloží do metadat. Interferogramy jsou odmítnuty.
+- **SPG (Thermo OMNIC, skupina spekter):** načte všechna spektra skupiny s jejich názvy.
 - **SPC:** jedno float32 spektrum s rovnoměrnou nebo explicitní osou X. Integer-scaled, multifile, XYXY a interferogramy jsou odmítnuty; textový soubor s příponou SPC lze načíst jako text.
 - **JCAMP-DX:** AFFN/PAC XYDATA (`X++(Y..Y)`), XYPOINTS, škálovací faktory a více samostatných bloků. SQZ/DIF/DUP, NTUPLES a peak tables jsou odmítnuty s chybou.
 
-Import kontroluje číselná data, odmítá duplicitní X a seřadí odpovídající dvojice X/Y vzestupně. **SPG, SRS a OPUS nejsou podporovány.** Podrobnosti a limity: [docs/formats-and-api.md](docs/formats-and-api.md).
+Import kontroluje číselná data, odmítá duplicitní X a seřadí odpovídající dvojice X/Y vzestupně. Formát binárních souborů se pozná i podle obsahu, takže se načte i soubor se špatnou příponou. **SRS a OPUS nejsou podporovány.** Podrobnosti a limity: [docs/formats-and-api.md](docs/formats-and-api.md).
 
 ## Zpracování dat
 
@@ -38,7 +39,7 @@ Operace v místním zpracovatelském jádře:
 
 - **Baseline:** korekce základní linie metodou AsLS.
 - **Smooth:** vyhlazení filtrem Savitzky–Golay.
-- **Despike:** odstranění kosmických spiků.
+- **Despike:** odstranění kosmických spiků. Spike se pozná podle reziduí vůči mediánovému filtru a navíc podle strmých hran nebo zubatosti, která převyšuje šum, takže se odstraní i spiky široké několik bodů, aniž by se ořezaly úzké skutečné pásy (např. Si 520 cm⁻¹). U série spekter (např. potenciálové EC-SERS) tlačítko **Spiky podle sousedních spekter** porovná každé spektrum s mediánem sousedů a nahradí jen místa, kde se od série výrazně liší.
 - **Normalize:** normalizace maxima, vektorem, plochou nebo rozsahem.
 - **Derivative:** výpočet první nebo druhé derivace.
 - **Convert Y:** převod mezi transmitancí a absorbancí.
@@ -51,7 +52,7 @@ Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav*
 
 ## Píky
 
-Popisky píků se rozmisťují automaticky: zůstávají u svého pásu (u transmitance pod ním), při kolizi se posunou do strany nebo dál od křivky a připojí se lomenou vodicí čarou; výraznější pásy mají přednost. Popisek, který se nevejde, se skryje (zůstane značka) a objeví se po přiblížení. Ručně přetažený popisek si drží polohu vůči píku. Tlačítko **Auto** u rozestupu křivek rozestoupí překryv spekter tak, aby se nepřekrývala.
+Popisky píků se rozmisťují automaticky: zůstávají u svého pásu (u transmitance pod ním) a zachovávají pořadí pásů. Popisky se nikdy nepřekrývají a vodicí čáry se nekříží, nevedou přes jiný popisek ani přes křivku: posunuté popisky jednoho shluku se lomí ve společném pásu nad ním. Pokud by se popisek musel posunout dál než o 2,5 své šířky, oblast je příliš hustá a nejslabší pás v ní zůstane bez popisku (počet skrytých popisků ukazuje graf; po přiblížení se objeví). Ručně přetažený popisek si drží polohu vůči píku. Tlačítko **Auto** u rozestupu křivek rozestoupí překryv spekter tak, aby se nepřekrývala.
 
 Automatická detekce podporuje maxima, minima nebo obojí, minimální prominenci, minimální vzdálenost v jednotkách X a omezení na oblast X. Ruční výběr zapnete volbou **Ruční výběr**: Ctrl/⌘+kliknutí přidá pík, Shift+kliknutí poblíž píku jej odstraní. Popisky píků lze přetahovat. Tabulku píků lze tlačítkem **Kopírovat TSV** zkopírovat do schránky.
 
@@ -63,7 +64,7 @@ Soubor `*.speclab.json` ukládá původní i aktuální data, recepturu zpracov�
 
 API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej na kartě **AI**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte před spuštěním aplikace v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
 
-Na kartě AI zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí JSON plán povolených operací a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů, odhad šumu), aby nevolila příliš široké vyhlazení.
+Na kartě AI zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí JSON plán povolených operací a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů měřené vůči jejich okolí, takže široké pozadí pásy nezakryje; typickou šířku pásu a odhad šumu), aby volila přiměřené vyhlazení, baseline a práh detekce. Velikosti písma se ověřují (čitelné minimum), detekce píků uvedená omylem mezi operacemi se přesune do vzhledu.
 
 Odesílá se text zadání a kontext spektra: technika, typ Y, jednotka X, rozsahy X/Y a počet bodů. Je-li zaškrtnuta volba redukovaného náhledu, přidá se min/max obálka o nejvýše 258 bodech. Náhled neobsahuje názvy ani cesty souborů.
 
@@ -94,7 +95,7 @@ python3 scripts/ai_smoke_test.py MODEL_ID   # konkrétní model
 
 ## Export
 
-Grafy lze exportovat do PNG, SVG a PDF; graf se při exportu rozvrhne do zvoleného poměru stran (šířka × výška v části Vzhled). Data lze uložit jako CSV nebo TSV, z aktuálních nebo původních importovaných dat, volitelně s desetinnou čárkou. Hromadný export spekter nabízí ZIP; tabulky píků lze exportovat také.
+Grafy lze exportovat do PNG, SVG a PDF. Export se vysází samostatným publikačním rendererem (matplotlib, 300 dpi, písma vložená do PDF/SVG): názvy os vystředěné na délku os, jednotky sazbou (cm⁻¹), skutečné minus, vnější ticky, otevřený rám, názvy spekter vedle křivek a stejné rozmístění popisků bez překryvů. Velmi malé nebo velké hodnoty (např. 0,0008 po normalizaci plochou) dostanou krátká čísla a násobitel v názvu osy (×10⁻⁴). Rozestup překrytých spekter se při exportu zvětší tak, aby se křivky ani popisky sousedů nedotýkaly. Výsledek lze předem zobrazit tlačítkem **Náhled publikačního obrázku…**; graf se rozvrhne do zvoleného poměru stran (šířka × výška v části Vzhled). Data lze uložit jako CSV nebo TSV, z aktuálních nebo původních importovaných dat, volitelně s desetinnou čárkou. Hromadný export spekter nabízí ZIP; tabulky píků lze exportovat také.
 
 ## Testy
 
@@ -109,7 +110,7 @@ ruff check src_python tests
 
 - Historie Zpět/Znovu drží posledních 40 kroků a neukládá se do projektu.
 - Zpracování probíhá ve vlákně uživatelského rozhraní; u stovek spekter okno na okamžik zamrzne (baseline pro 500 spekter × 1000 bodů ≈ 0,6 s).
-- Formáty SPG, SRS a OPUS nejsou podporovány.
+- Formáty SRS a OPUS nejsou podporovány.
 - WDF multitrack a komprimované JCAMP (SQZ/DIF/DUP) se odmítají se zprávou.
 
 ## Autor / kontakt
