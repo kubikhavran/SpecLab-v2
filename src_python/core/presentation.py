@@ -71,6 +71,11 @@ def validate_presentation(value, state=None) -> dict:
             raise PresentationError("Nepodporované písmo.")
         if "palette" in given and given["palette"] not in PALETTES:
             raise PresentationError("Neznámá barevná paleta.")
+        for key, low in (("base_font_size", 18), ("tick_font_size", 18), ("label_font_size", 15)):
+            # SpecLab units are 3 x points; smaller values give unreadable figures.
+            if key in given and isinstance(given[key], (int, float)) and given[key] < low:
+                raise PresentationError(
+                    f"{key} {given[key]} je příliš malé (jednotky SpecLabu = 3× body; min. {low}).")
         if "label_angle_deg" in given and not (
             isinstance(given["label_angle_deg"], (int, float)) and -180 <= given["label_angle_deg"] <= 180
         ):

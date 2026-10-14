@@ -268,3 +268,15 @@ def test_transient_server_error_is_retried_once():
     with patch("urllib.request.build_opener", return_value=Opener()), patch("time.sleep"):
         assert client.list_models() == ["m"]
     assert len(calls) == 2
+
+
+def test_band_summary_sees_bands_on_a_broad_background():
+    x = np.linspace(100, 1900, 1801)
+    background = 5000 * np.exp(-0.5 * ((x - 1300) / 400) ** 2)
+    bands = sum(h * np.exp(-0.5 * ((x - c) / 12) ** 2) for c, h in [(400, 600), (900, 500), (1600, 400)])
+    y = background + bands + np.random.default_rng(1).normal(0, 10, len(x))
+    spec = Spectrum(x=x.tolist(), y=y.tolist(), meta={"technique": "raman"})
+    context = spectrum_context(spec, y, False)
+    found = sorted(round(band["x"] / 100) * 100 for band in context["strongest_bands"])
+    assert {400, 900, 1600} <= set(found)
+    assert 20 < context["typical_band_fwhm_points"] < 40      # FWHM 28 points, not the background
