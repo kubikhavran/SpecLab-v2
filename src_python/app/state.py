@@ -523,21 +523,34 @@ class AppState(QObject):
     def preview_operations(
         self, operations: list[dict], spectrum_ids=None,
         source: str = 'manual', label: Optional[str] = None,
+        operations_by_id: Optional[dict] = None,
     ) -> dict:
-        """Compute a reviewable proposal without changing spectra or history."""
+        """Compute a reviewable proposal without changing spectra or history.
+
+        ``operations_by_id`` gives individual recipes per spectrum (e.g. the
+        interpolation ranges found by series despiking); ``operations`` then
+        only describes the step for labels.
+        """
         from core.processing import run_operations, validate_operations
 
-        ids = self._resolve_ids(spectrum_ids)
-        operations = validate_operations(operations)
+        if operations_by_id is not None:
+            ids = self._resolve_ids(list(operations_by_id))
+            per_spectrum = {sid: validate_operations(ops) for sid, ops in operations_by_id.items()}
+            operations = [op for sid in ids for op in per_spectrum[sid]]
+        else:
+            ids = self._resolve_ids(spectrum_ids)
+            operations = validate_operations(operations)
+            per_spectrum = {sid: operations for sid in ids}
         if source not in {'manual', 'ai', 'preset'}:
             raise ValueError('Neznámý zdroj zpracování.')
         label = str(label or ' → '.join(op['op'] for op in operations))[:240]
         results = {}
         for spec in self._spectra:
             if spec.id in ids:
-                if len(self._recipes.get(spec.id, [])) + len(operations) > 100:
+                own = per_spectrum[spec.id]
+                if len(self._recipes.get(spec.id, [])) + len(own) > 100:
                     raise ValueError('Recept spektra může obsahovat nejvýše 100 operací. Před vytvořením dalšího receptu obnov původní data.')
-                result = run_operations(spec.x, self.displayed_y(spec.id), spec.meta, operations)
+                result = run_operations(spec.x, self.displayed_y(spec.id), spec.meta, own)
                 result['meta'] = self._validated_metadata(result['meta'])
                 self._validate_data(result['x'], result['y'])
                 results[spec.id] = result
@@ -547,9 +560,37 @@ class AppState(QObject):
             'operations': operations, 'source': source, 'label': label,
             'results': results,
         }
+        if operations_by_id is not None:
+            proposal['operations_by_id'] = per_spectrum
         self._preview = self._copy_preview(proposal)
         self.preview_changed.emit()
         return proposal
+
+    def preview_series_despike(self, spectrum_ids=None) -> Optional[dict]:
+        """Find cosmic hits by comparing each spectrum with its series neighbours.
+
+        Returns a preview with per-spectrum ``interpolate`` steps, or None if
+        no spectrum has a hit. Order follows the spectrum list.
+        """
+        from core.processing import series_spike_ranges
+
+        ids = self._resolve_ids(spectrum_ids if spectrum_ids is not None else [s.id for s in self._spectra])
+        ordered = [s for s in self._spectra if s.id in ids]
+        if len(ordered) < 3:
+            raise ValueError('Porovnání se sousedy potřebuje alespoň tři spektra série.')
+        curves = [(s.x, self.displayed_y(s.id)) for s in ordered]
+        operations = {}
+        for index, spec in enumerate(ordered):
+            ranges = series_spike_ranges(curves, index)
+            if ranges:
+                operations[spec.id] = [{'op': 'interpolate', 'params': {'min': low, 'max': high}}
+                                       for low, high in ranges]
+        if not operations:
+            self.clear_preview()
+            return None
+        count = sum(len(ops) for ops in operations.values())
+        return self.preview_operations([], label=f'Spiky podle sousedních spekter ({count} míst)',
+                                       operations_by_id=operations)
 
     def apply_operations(
         self, operations: list[dict], spectrum_ids=None,
@@ -579,11 +620,12 @@ class AppState(QObject):
             self._clear_derived(spec.id)
             if _rescales(preview['operations']):
                 spec.meta.pop(LABEL_OFFSETS, None)
+            own = preview.get('operations_by_id', {}).get(spec.id, preview['operations'])
             old_recipe = self._recipes.get(spec.id, [])
-            self._shift_manual_peaks(spec.id, old_recipe, old_recipe + preview['operations'])
-            self._recipes.setdefault(spec.id, []).extend(copy.deepcopy(preview['operations']))
+            self._shift_manual_peaks(spec.id, old_recipe, old_recipe + own)
+            self._recipes.setdefault(spec.id, []).extend(copy.deepcopy(own))
             # The overlay is descriptive only; it is never another processing input.
-            if preview['operations'][-1]['op'] == 'baseline':
+            if own and own[-1]['op'] == 'baseline':
                 details = result.get('details', [])
                 baseline = details[-1].get('baseline') if details else None
                 if baseline is not None and len(baseline) == len(spec.y):

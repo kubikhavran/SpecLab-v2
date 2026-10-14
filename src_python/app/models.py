@@ -52,9 +52,9 @@ class SmoothingSettings:
 class CosmicSettings:
     window: int = 11
     threshold: float = 6.0
-    max_width: int = 3
+    max_width: int = 5          # multi-pixel CCD hits; edges must still be abrupt
     positive_only: bool = True
-    iterations: int = 1
+    iterations: int = 2
     manual_enabled: bool = False
 
 

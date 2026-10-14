@@ -157,5 +157,21 @@ class ProcessingTests(unittest.TestCase):
         self.assertTrue(all(p.kind == 'min' and p.prominence > 0 for p in minima))
 
 
+
+
+
+def test_wide_cosmic_spikes_removed_but_narrow_bands_kept():
+    x = np.arange(400.0)
+    band = 1000 * np.exp(-0.5 * ((x - 100) / 1.87) ** 2)          # FWHM 4.4 points, like Si 520
+    y = 50 + band + np.random.default_rng(1).normal(0, 2, len(x))
+    y[250:254] += 800                                              # 4-pixel cosmic hit
+    y[300], y[302] = y[300] + 900, y[302] + 1200                   # hit split by a lower pixel
+    y[301] += 300
+    result = run_operations(x, y, {}, [operation('despike')])
+    cleaned = np.asarray(result['y'])
+    assert cleaned[100] > 0.99 * y[100]                           # band untouched
+    assert np.max(cleaned[245:260]) < 70 and np.max(cleaned[295:310]) < 70
+
+
 if __name__ == '__main__':
     unittest.main()

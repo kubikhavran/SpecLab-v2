@@ -27,8 +27,8 @@ MAX_POINTS = 1_000_000
 DEFAULTS = {
     'baseline': {'lam': 1e6, 'p': 0.01, 'iterations': 10},
     'smooth': {'window': 11, 'poly_order': 3},
-    'despike': {'window': 11, 'threshold': 6.0, 'max_width': 3,
-                'positive_only': True, 'iterations': 1},
+    'despike': {'window': 11, 'threshold': 6.0, 'max_width': 5,
+                'positive_only': True, 'iterations': 2},
     'normalize': {'method': 'max'},
     'derivative': {'order': 1, 'window': 11, 'poly_order': 3},
     'convert_y': {'target': None},
@@ -199,6 +199,37 @@ def _interpolate(x, y, mask):
     return result
 
 
+SPIKE_EDGE_RATIO = 4.0
+
+
+def _abrupt(values, outside, inside, sign, noise) -> bool:
+    """Edge step into the run vs the step just before it (moving outwards)."""
+    jump = sign * (values[inside] - values[outside])
+    before = outside - (inside - outside)
+    previous = values[outside] - values[before] if 0 <= before < len(values) else 0.0
+    return jump > SPIKE_EDGE_RATIO * max(abs(previous), 2 * noise)
+
+
+SPIKE_ROUGHNESS = 1.6
+
+
+def _jagged(values, start, end, step_noise) -> bool:
+    """Ragged multi-pixel cosmic hits vs smooth bands.
+
+    Summed |second difference| over the run (± 2 points) relative to its
+    amplitude is ≈1 for a sampled Gaussian/Lorentzian band and ≥2 for spikes;
+    the part expected from white noise (E|Δ²| ≈ 1.95 σ) is subtracted first.
+    """
+    low, high = max(start - 2, 0), min(end + 2, len(values))
+    window = values[low:high]
+    amplitude = float(np.max(window) - np.min(window))
+    if len(window) < 5 or amplitude <= 0:
+        return False
+    curvature = np.abs(np.diff(window, 2))
+    noise = 1.95 * step_noise / np.sqrt(2) * len(curvature)
+    return max(float(np.sum(curvature)) - noise, 0.0) / amplitude > SPIKE_ROUGHNESS
+
+
 def _despike_part(x, y, params):
     output = y.copy()
     removed = np.zeros(len(y), dtype=bool)
@@ -210,13 +241,25 @@ def _despike_part(x, y, params):
         # A flat trace with a single cosmic spike has zero MAD; retain a numerical floor.
         floor = np.finfo(float).eps * max(1.0, float(np.max(np.abs(output)))) * 32
         cut = params['threshold'] * max(float(sigma), floor)
-        candidates = ((residual - centre) > cut if params['positive_only']
-                      else np.abs(residual - centre) > cut)
+        deviation = (residual - centre) if params['positive_only'] else np.abs(residual - centre)
+        candidates = deviation > cut
+        # A spike split by one less extreme point (common for multi-pixel
+        # cosmic hits) is one event.
+        dips = ~candidates[1:-1] & candidates[:-2] & candidates[2:] & (deviation[1:-1] > cut / 2)
+        candidates[1:-1] |= dips
         mask = np.zeros(len(y), dtype=bool)
         starts = np.flatnonzero(np.diff(np.r_[False, candidates, False].astype(int)) == 1)
         ends = np.flatnonzero(np.diff(np.r_[False, candidates, False].astype(int)) == -1)
+        steps = np.diff(output)
+        step_noise = 1.4826 * float(np.median(np.abs(steps - np.median(steps))))
         for start, end in zip(starts, ends):
-            if end - start <= params['max_width'] and start > 0 and end < len(y):
+            if end - start > params['max_width'] or start == 0 or end >= len(y):
+                continue
+            # A cosmic spike jumps from the background in one step; a real band,
+            # however narrow, rises with growing steps. Both edges must be abrupt.
+            sign = 1.0 if residual[start:end].mean() >= centre else -1.0
+            abrupt = _abrupt(output, start - 1, start, sign, step_noise) and _abrupt(output, end, end - 1, sign, step_noise)
+            if abrupt or _jagged(output, start, end, step_noise):
                 mask[start:end] = True
         if not np.any(mask):
             break
@@ -354,3 +397,60 @@ def run_operations(x, y, meta, operations) -> dict:
         x, y = _arrays(x, y)
         details.append(detail)
     return {'x': x.tolist(), 'y': y.tolist(), 'meta': meta, 'details': details}
+
+
+SERIES_THRESHOLD = 8.0       # robust sigmas above the neighbours' median
+SERIES_MAX_WIDTH = 12        # points; wider excess is treated as real change
+
+
+def series_spike_ranges(curves, index, neighbours=2, threshold=SERIES_THRESHOLD,
+                        max_width=SERIES_MAX_WIDTH):
+    """X ranges in curve ``index`` that rise only in that spectrum of a series.
+
+    ``curves`` is the ordered series [(x, y), ...]. Each neighbour within
+    ±``neighbours`` is interpolated onto this X axis and scaled by least
+    squares; the per-point median of neighbours is the reference. Narrow
+    positive excess over it (cosmic hits) is returned as (min, max) ranges for
+    ``interpolate`` operations; bands present in neighbours never qualify.
+    """
+    x, y = (np.asarray(v, dtype=float) for v in curves[index])
+    ascending = x[-1] > x[0]
+    others = []
+    for j in range(max(0, index - neighbours), min(len(curves), index + neighbours + 1)):
+        if j == index:
+            continue
+        xj, yj = (np.asarray(v, dtype=float) for v in curves[j])
+        if xj[0] > xj[-1]:
+            xj, yj = xj[::-1], yj[::-1]
+        inside = (x >= xj[0]) & (x <= xj[-1])
+        if np.count_nonzero(inside) < 0.9 * len(x):
+            continue
+        yi = np.interp(x, xj, yj)
+        design = np.c_[yi, np.ones_like(yi)]
+        scale, offset = np.linalg.lstsq(design, y, rcond=None)[0]
+        others.append(scale * yi + offset)
+    if len(others) < 2:
+        return []
+    residual = y - np.median(np.vstack(others), axis=0)
+    centre = float(np.median(residual))
+    sigma = 1.4826 * float(np.median(np.abs(residual - centre))) or 1e-12
+    excess = (residual - centre) / sigma
+    hit = excess > threshold
+    hit[1:-1] |= ~hit[1:-1] & hit[:-2] & hit[2:] & (excess[1:-1] > threshold / 2)
+    starts = np.flatnonzero(np.diff(np.r_[False, hit, False].astype(int)) == 1)
+    ends = np.flatnonzero(np.diff(np.r_[False, hit, False].astype(int)) == -1)
+    ranges = []
+    for start, end in zip(starts, ends):
+        # Include shoulders of the hit that are still clearly above the reference.
+        while start > 1 and excess[start - 1] > 3:
+            start -= 1
+        while end < len(x) - 1 and excess[end] > 3:
+            end += 1
+        if end - start > max_width or start == 0 or end >= len(x):
+            continue
+        step = abs(float(x[1] - x[0])) / 4
+        low, high = sorted((float(x[start]), float(x[end - 1])))
+        ranges.append((low - step, high + step))
+    if not ascending:
+        ranges.sort()
+    return ranges

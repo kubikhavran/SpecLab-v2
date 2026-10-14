@@ -294,3 +294,40 @@ class StateTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+
+def test_potential_names_use_the_last_millivolt_value():
+    from core.labels import spectrum_names
+
+    spectra = [Spectrum(name=n, x=[1, 2], y=[1, 2], meta={'sourceName': n + '.wdf'})
+               for n in ['EC-SERS_HEX_785_10pr_3x10s_50mV_-200mv', 'EC-SERS_HEX_785_10pr_3x10s_50mV_0mv']]
+    names = spectrum_names(spectra, method='mv', suffix=' mV')
+    assert [names[s.id] for s in spectra] == ['-200 mV', '0 mV']
+
+
+
+def test_series_despike_removes_hits_present_in_one_spectrum_only():
+    x = np.linspace(300, 1700, 1401)
+    rng = np.random.default_rng(5)
+    state = AppState()
+    spectra = []
+    for k in range(6):
+        y = 100 + 800 * np.exp(-0.5 * ((x - 1000) / 8) ** 2) + rng.normal(0, 5, len(x))
+        if k == 3:
+            y[400:407] += [900, 2500, 1200, 3000, 1500, 600, 300]   # ragged 7-px hit
+            y[600] += 5000                                           # hit on a band
+        spectra.append((Spectrum(name=f'{k}', x=x.tolist(), y=y.tolist(), meta={}), None))
+    state.add_spectra(spectra)
+    target = state.spectra[3]
+    band = list(target.y[690:710])
+    preview = state.preview_series_despike()
+    assert list(preview['operations_by_id']) == [target.id]
+    state.apply_preview(preview)
+    cleaned = np.asarray(target.y)
+    assert np.max(cleaned[395:412]) < 140
+    assert cleaned[600] < 200
+    assert list(cleaned[690:710]) == band                              # the band is untouched
+    assert all(op['op'] == 'interpolate' for op in state.processing_recipe(target.id))
+    state.undo()
+    assert state.spectra[3].y[600] > 4000

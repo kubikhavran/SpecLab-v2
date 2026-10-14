@@ -111,6 +111,13 @@ class CosmicPanel(QWidget):
         layout.addLayout(btn2)
 
         # Info label
+        self._btn_series = QPushButton("Spiky podle sousedních spekter (série)")
+        self._btn_series.setToolTip(
+            "Každé spektrum porovná s mediánem sousedních spekter v pořadí seznamu "
+            "(např. potenciálová nebo časová série) a nahradí úzká místa, která vystoupí "
+            "jen v něm. Pásy přítomné i v sousedech zůstanou. Seznam musí být seřazený."
+        )
+        layout.addWidget(self._btn_series)
         self._info = QLabel("")
         self._info.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(self._info)
@@ -126,6 +133,7 @@ class CosmicPanel(QWidget):
         self._btn_reset.clicked.connect(self._on_reset)
         self._btn_apply_all.clicked.connect(self._on_apply_all)
         self._btn_reset_all.clicked.connect(self._on_reset_all)
+        self._btn_series.clicked.connect(self._on_series)
 
         # Keep controls synced after external state updates (e.g. presets).
         self._state.cosmic_changed.connect(self._sync_from_state)
@@ -227,3 +235,16 @@ class CosmicPanel(QWidget):
 
     def _on_reset_all(self) -> None:
         self._reset([spec.id for spec in self._state.spectra])
+
+    @with_busy_cursor
+    def _on_series(self) -> None:
+        try:
+            preview = self._state.preview_series_despike()
+            if preview is None:
+                self._info.setText("V sérii nebyly nalezeny žádné kosmické zásahy.")
+                return
+            self._state.apply_preview(preview)
+            spectra = len(preview["operations_by_id"])
+            self._info.setText(f"{preview['label']} · upraveno spekter: {spectra}")
+        except ValueError as error:
+            QMessageBox.warning(self, "Zpracování nelze použít", str(error))
