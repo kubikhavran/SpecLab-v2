@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from ui.busy import with_busy_cursor
 
 
 class ProcessingPanel(QWidget):
@@ -168,6 +169,7 @@ class ProcessingPanel(QWidget):
             },
         ][self.tool.currentIndex()]
 
+    @with_busy_cursor
     def _preview(self):
         try:
             self.state.preview_operations(
@@ -192,6 +194,7 @@ class ProcessingPanel(QWidget):
             )
         )
 
+    @with_busy_cursor
     def _apply(self):
         try:
             self.state.apply_preview()
@@ -199,6 +202,7 @@ class ProcessingPanel(QWidget):
         except ValueError as exc:
             self.status.setText(str(exc))
 
+    @with_busy_cursor
     def _reset(self):
         try:
             self.state.reset_processing(self._ids())

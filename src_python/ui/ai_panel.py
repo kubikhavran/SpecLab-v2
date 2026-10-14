@@ -28,6 +28,7 @@ from core.ai_client import (
     spectrum_context,
     stored_api_key,
 )
+from ui.busy import with_busy_cursor
 
 
 class _RequestThread(QThread):
@@ -298,6 +299,7 @@ class AIPanel(QWidget):
             )
         )
 
+    @with_busy_cursor
     def _preview(self):
         try:
             if (
@@ -344,6 +346,7 @@ class AIPanel(QWidget):
         )
         self.apply_button.setEnabled(valid)
 
+    @with_busy_cursor
     def _apply(self):
         try:
             summary = self.state.preview_summary

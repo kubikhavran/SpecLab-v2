@@ -239,6 +239,7 @@ class AppState(QObject):
             self._validate_data(spectrum.x, spectrum.y)
             prepared.append((spectrum, self._validated_metadata(spectrum.meta), peaks))
         # Nothing is changed until every spectrum in the batch is valid.
+        before = self._snapshot()
         any_peaks = False
         for spectrum, meta, peaks in prepared:
             spectrum.x = list(spectrum.x)
@@ -255,52 +256,31 @@ class AppState(QObject):
         if any_peaks:
             # Imported labels should be visible immediately.
             self._peaks.enabled = True
-        self._discard_session_undo()
-        self._invalidate()
         self._active_spectrum_id = prepared[-1][0].id
-        self.spectra_changed.emit()
-        self.active_spectrum_changed.emit()
-        if any_peaks:
-            self.peaks_changed.emit()
+        self._record_transaction(before, 'Import spectra', 'manual', [],
+                                 [spectrum.id for spectrum, _, _ in prepared])
 
     def remove_spectrum(self, spectrum_id: str) -> None:
-        if not any(s.id == spectrum_id for s in self._spectra):
-            return
-        self._spectra = [s for s in self._spectra if s.id != spectrum_id]
-        self._original.pop(spectrum_id, None)
-        self._recipes.pop(spectrum_id, None)
-        self._discard_session_undo()
-        self._invalidate()
-        # Clean up per-spectrum data
-        for store in (
-            self.cosmic_clean_y, self.processed_y,
-            self.baseline_y, self.smoothed_y,
-            self.peaks_auto, self.peaks_manual,
-        ):
-            store.pop(spectrum_id, None)
-        # Fix active selection
-        if self._active_spectrum_id == spectrum_id:
-            self._active_spectrum_id = (
-                self._spectra[0].id if self._spectra else None
-            )
-            self.active_spectrum_changed.emit()
-        self.spectra_changed.emit()
+        self.remove_spectra([spectrum_id])
+
+    def remove_spectra(self, spectrum_ids, label: str = 'Remove spectra') -> Optional[dict]:
+        """Remove spectra with all derived data as one undoable transaction."""
+        ids = set(spectrum_ids) & {s.id for s in self._spectra}
+        if not ids:
+            return None
+        before = self._snapshot()
+        self._spectra = [s for s in self._spectra if s.id not in ids]
+        for store in (self._original, self._recipes,
+                      self.cosmic_clean_y, self.processed_y, self.baseline_y, self.smoothed_y,
+                      self.peaks_auto, self.peaks_manual):
+            for sid in ids:
+                store.pop(sid, None)
+        if self._active_spectrum_id in ids:
+            self._active_spectrum_id = self._spectra[0].id if self._spectra else None
+        return self._record_transaction(before, label, 'manual', [], sorted(ids))
 
     def clear_spectra(self) -> None:
-        self._spectra.clear()
-        self._active_spectrum_id = None
-        self._original.clear()
-        self._recipes.clear()
-        self._discard_session_undo()
-        self._invalidate()
-        for store in (
-            self.cosmic_clean_y, self.processed_y,
-            self.baseline_y, self.smoothed_y,
-            self.peaks_auto, self.peaks_manual,
-        ):
-            store.clear()
-        self.spectra_changed.emit()
-        self.active_spectrum_changed.emit()
+        self.remove_spectra([s.id for s in self._spectra], 'Clear spectra')
 
     def set_active_spectrum(self, spectrum_id: str) -> None:
         if not any(s.id == spectrum_id for s in self._spectra):
@@ -511,12 +491,6 @@ class AppState(QObject):
             if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in coords):
                 raise ValueError('Peak label offsets must be finite.')
         return result
-
-    def _discard_session_undo(self) -> None:
-        # Membership changes make older whole-workspace snapshots obsolete.
-        self._undo_stack.clear()
-        self._redo_stack.clear()
-        self.history_changed.emit()
 
     def _invalidate(self) -> None:
         self._revision += 1
@@ -939,7 +913,10 @@ class AppState(QObject):
                 target_by_id = {s.id: s for s in value}
                 order = ([s.id for s in self._spectra] if [s.id for s in before[attr]] == [s.id for s in after[attr]]
                          else [s.id for s in value])
+                # Spectra added or removed by this transaction come from the target.
                 result[attr] = [self._merge_unchanged(b[sid], a[sid], target_by_id[sid], current[sid], memo)
+                                if sid in b and sid in a and sid in current
+                                else copy.deepcopy(target_by_id[sid], memo)
                                 for sid in order]
             else:
                 result[attr] = self._merge_unchanged(before[attr], after[attr], value, getattr(self, attr), memo)

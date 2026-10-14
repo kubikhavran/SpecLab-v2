@@ -30,6 +30,7 @@ from core.presets import (
     load_presets,
     save_presets,
 )
+from ui.busy import with_busy_cursor
 
 
 class PresetsPanel(QWidget):
@@ -153,6 +154,7 @@ class PresetsPanel(QWidget):
         self._persist()
         self._info.setText(f"Aktualizováno: {preset.name}")
 
+    @with_busy_cursor
     def _on_apply(self, *_args) -> None:
         preset = self._selected_preset()
         if preset is None:

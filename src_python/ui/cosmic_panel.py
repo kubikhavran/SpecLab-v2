@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
+from ui.busy import with_busy_cursor
 
 
 class CosmicPanel(QWidget):
@@ -187,6 +188,7 @@ class CosmicPanel(QWidget):
         s = self._state.cosmic
         return {'op': 'despike', 'params': {'window': s.window, 'threshold': s.threshold, 'max_width': s.max_width, 'positive_only': s.positive_only, 'iterations': s.iterations}}
 
+    @with_busy_cursor
     def _apply(self, ids: list[str]) -> None:
         if not ids:
             return
@@ -199,6 +201,7 @@ class CosmicPanel(QWidget):
         except (ValueError, ArithmeticError) as error:
             QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
+    @with_busy_cursor
     def _reset(self, ids: list[str]) -> None:
         if not ids:
             return

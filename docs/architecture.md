@@ -9,7 +9,8 @@ Tento dokument popisuje aktuální desktopovou aplikaci Python/PySide6. Vstupní
 - Zpracování probíhá jako náhled nad kopiemi dat. `preview_operations` ověří recepturu a připraví výsledek; `apply_preview` jej použije jako jedinou transakci.
 - Undo/redo ukládá snapshoty. Snapshoty sdílejí nezměněné seznamy X/Y, proto se tyto seznamy nikdy nesmějí měnit na místě; vždy se musí nahradit novými seznamy.
 - Posuny popisků píků se ukládají v metadatech spektra pod klíčem `peak_label_offsets`. Hodnoty jsou posuny vůči souřadnici příslušného píku, nikoli absolutní souřadnice grafu.
-- Import nebo odebrání spekter čistí undo/redo historii.
+- Import, odebrání i vymazání spekter jsou transakce s undo; `_restore_transaction` při návratu bere přidaná/odebraná spektra z cílového snapshotu a u ostatních zachová pozdější netransakční změny (nastavení, výběr).
+- UI sloty s delším během používají `ui/busy.py` (`with_busy_cursor`); zpracování běží ve vlákně UI.
 
 ## Zpracování a AI
 

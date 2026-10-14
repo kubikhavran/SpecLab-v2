@@ -47,7 +47,7 @@ Operace v místním zpracovatelském jádře:
 - **Shift:** posun os X a/nebo Y.
 - **Interpolate:** interpolace hodnot Y ve zvoleném rozsahu.
 
-Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav** a lze ji vrátit či znovu provést tlačítky **Zpět/Znovu**. Původní importovaná data zůstávají zachována. Vyhlazení, korekce baseline a despike pracují po bodech a přijímají i mírně nerovnoměrné osy X (typické například pro Ramanovo CCD). Derivace vyžaduje rovnoměrnou osu X; jinak nejprve použijte **Převzorkování**.
+Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav** a lze ji vrátit či znovu provést tlačítky **Zpět/Znovu** – to platí i pro import, odebrání a vymazání spekter. Původní importovaná data zůstávají zachována. Vyhlazení, korekce baseline a despike pracují po bodech a přijímají i mírně nerovnoměrné osy X (typické například pro Ramanovo CCD). Derivace vyžaduje rovnoměrnou osu X; jinak nejprve použijte **Převzorkování**.
 
 ## Píky
 
@@ -92,7 +92,7 @@ python3 scripts/ai_smoke_test.py MODEL_ID   # konkrétní model
 
 ## Export
 
-Grafy lze exportovat do PNG, SVG a PDF. Data lze uložit jako CSV nebo TSV, z aktuálních nebo původních importovaných dat, volitelně s desetinnou čárkou. Hromadný export spekter nabízí ZIP; tabulky píků lze exportovat také.
+Grafy lze exportovat do PNG, SVG a PDF; graf se při exportu rozvrhne do zvoleného poměru stran (šířka × výška v části Vzhled). Data lze uložit jako CSV nebo TSV, z aktuálních nebo původních importovaných dat, volitelně s desetinnou čárkou. Hromadný export spekter nabízí ZIP; tabulky píků lze exportovat také.
 
 ## Testy
 
@@ -105,8 +105,7 @@ ruff check src_python tests
 
 ## Známá omezení
 
-- Import spekter nebo odebrání spektra vymaže historii Zpět/Znovu.
-- Exportovaný obrázek zachovává poměr stran grafu na obrazovce; jiný poměr stran exportu přidá okraje.
+- Historie Zpět/Znovu drží posledních 40 kroků a neukládá se do projektu.
 - Zpracování probíhá ve vlákně uživatelského rozhraní; u stovek spekter okno na okamžik zamrzne (baseline pro 500 spekter × 1000 bodů ≈ 0,6 s).
 - Formáty SPG, SRS a OPUS nejsou podporovány.
 - WDF multitrack a komprimované JCAMP (SQZ/DIF/DUP) se odmítají se zprávou.

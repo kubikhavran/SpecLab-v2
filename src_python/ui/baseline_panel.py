@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
+from ui.busy import with_busy_cursor
 
 
 LAMBDA_EXP_MIN = 2
@@ -156,6 +157,7 @@ class BaselinePanel(QWidget):
         s = self._state.baseline
         return {'op': 'baseline', 'params': {'lam': s.lambda_, 'p': s.p, 'iterations': s.iterations}}
 
+    @with_busy_cursor
     def _apply(self, ids: list[str]) -> None:
         if not ids:
             return
@@ -165,6 +167,7 @@ class BaselinePanel(QWidget):
         except (ValueError, ArithmeticError) as error:
             QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
+    @with_busy_cursor
     def _reset(self, ids: list[str]) -> None:
         if not ids:
             return

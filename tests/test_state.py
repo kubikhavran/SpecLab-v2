@@ -35,9 +35,10 @@ class StateTests(unittest.TestCase):
 
     def test_preview_is_nonmutating_stale_and_tamper_guarded(self):
         original = list(self.spec.y)
+        undo_depth = len(self.state._undo_stack)
         proposal = self.state.preview_operations([op('shift', y=1)])
         self.assertEqual(self.spec.y, original)
-        self.assertFalse(self.state.can_undo)
+        self.assertEqual(len(self.state._undo_stack), undo_depth)
         proposal['results'][self.spec.id]['y'][0] = 100
         with self.assertRaises(ValueError):
             self.state.apply_preview(proposal)
@@ -54,12 +55,13 @@ class StateTests(unittest.TestCase):
         short = Spectrum(x=[1, 2], y=[1, 2])
         self.state.add_spectrum(short)
         before = [list(spec.y) for spec in self.state.spectra]
+        history, undo_depth = self.state.history, len(self.state._undo_stack)
         with self.assertRaises(ValueError):
             self.state.apply_operations([op('smooth', window=5, poly_order=2)],
                                         [self.spec.id, short.id])
         self.assertEqual([s.y for s in self.state.spectra], before)
-        self.assertFalse(self.state.can_undo)
-        self.assertEqual(self.state.history, [])
+        self.assertEqual(len(self.state._undo_stack), undo_depth)
+        self.assertEqual(self.state.history, history)
 
     def test_manual_peaks_metadata_and_settings_restored(self):
         self.state.peaks_manual[self.spec.id] = [Peak(x=5, label='marker')]
@@ -166,6 +168,36 @@ class StateTests(unittest.TestCase):
         self.assertEqual((meta['technique'], meta['x_unit']), ('raman', 'cm^-1'))
         # The raw ordinate stays as imported; it is not relabelled after processing.
         self.assertEqual(self.state.original_metadata(self.spec.id)['y_kind'], 'absorbance')
+
+    def test_import_remove_and_clear_are_undoable_without_losing_edits(self):
+        self.state.apply_operations([op('shift', y=2)])
+        shifted = list(self.state.active_spectrum.y)
+        other = Spectrum(name='other', x=[1, 2, 3], y=[3, 2, 1])
+        self.state.add_spectra([(other, [Peak(x=2, source='manual')])])
+        self.state.remove_spectrum(self.spec.id)
+        self.assertEqual([s.id for s in self.state.spectra], [other.id])
+        self.state.undo()  # removal
+        self.assertEqual([s.id for s in self.state.spectra], [self.spec.id, other.id])
+        self.assertEqual(self.state.active_spectrum_id, other.id)
+        self.state.set_active_spectrum(self.spec.id)
+        self.assertEqual(self.state.active_spectrum.y, shifted)
+        self.assertEqual(self.state.processing_recipe(self.spec.id)[0]['op'], 'shift')
+        self.state.clear_spectra()
+        self.assertEqual(self.state.spectra, [])
+        self.state.undo()  # clear
+        self.assertEqual(len(self.state.spectra), 2)
+        self.assertEqual(len(self.state.peaks_manual[other.id]), 1)
+        self.state.undo()  # import
+        self.assertEqual([s.id for s in self.state.spectra], [self.spec.id])
+        self.assertNotIn(other.id, self.state.peaks_manual)
+        self.assertIsNone(self.state.original_data(other.id))
+        self.state.redo()
+        self.assertEqual([s.id for s in self.state.spectra], [self.spec.id, other.id])
+        self.assertEqual(self.state.history[-1]['action'], 'redo')
+        # The earlier processing step is still undoable after membership changes.
+        self.state.undo()
+        self.state.undo()
+        self.assertEqual(self.state.active_spectrum.y, [float(i + 1) for i in range(21)])
 
     def test_batch_add_is_atomic(self):
         good = Spectrum(name='good', x=[1, 2, 3], y=[1, 2, 3])

@@ -106,3 +106,23 @@ def test_delete_shortcut_requires_selected_peak_row():
     assert state.peaks_manual[spec.id] == []
     window._dirty = False
     window.close()
+
+
+def test_history_is_shown_in_czech_and_imports_are_undoable():
+    from app.main_window import history_text
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.load_demo()
+    app.processEvents()
+    state = window._state
+    assert window.undo_button.isEnabled()
+    state.apply_operations([{"op": "smooth", "params": {}}])
+    assert window.history_list.item(0).text() == "Vyhlazení · ručně"
+    assert history_text({"label": "AI návrh", "source": "ai", "action": "undo"}) == "↶ Zpět: AI návrh · AI"
+    state.undo()
+    state.undo()
+    assert state.spectra == []
+    assert window.history_list.item(0).text() == "↶ Zpět: Import spekter · ručně"
+    window._dirty = False
+    window.close()

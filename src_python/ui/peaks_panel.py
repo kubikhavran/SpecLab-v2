@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
+from ui.busy import with_busy_cursor
 
 
 class PeaksPanel(QWidget):
@@ -99,12 +100,12 @@ class PeaksPanel(QWidget):
         region_row = QHBoxLayout()
         region_row.addWidget(QLabel('Min. X:'))
         self._region_min = QDoubleSpinBox()
-        self._region_min.setDecimals(6)
+        self._region_min.setDecimals(4)
         self._region_min.setRange(-1e12, 1e12)
         region_row.addWidget(self._region_min)
         region_row.addWidget(QLabel('Max. X:'))
         self._region_max = QDoubleSpinBox()
-        self._region_max.setDecimals(6)
+        self._region_max.setDecimals(4)
         self._region_max.setRange(-1e12, 1e12)
         region_row.addWidget(self._region_max)
         layout.addLayout(region_row)
@@ -263,6 +264,7 @@ class PeaksPanel(QWidget):
             return
         self._state.set_peaks(x_min=lower, x_max=upper)
 
+    @with_busy_cursor
     def _detect(self, ids: list[str]) -> None:
         if not ids:
             return

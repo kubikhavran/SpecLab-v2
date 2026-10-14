@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.state import AppState
+from ui.busy import with_busy_cursor
 
 
 class SmoothingPanel(QWidget):
@@ -124,6 +125,7 @@ class SmoothingPanel(QWidget):
         s = self._state.smoothing
         return {'op': 'smooth', 'params': {'window': s.window, 'poly_order': s.poly_order}}
 
+    @with_busy_cursor
     def _apply(self, ids: list[str]) -> None:
         if not ids:
             return
@@ -133,6 +135,7 @@ class SmoothingPanel(QWidget):
         except (ValueError, ArithmeticError) as error:
             QMessageBox.warning(self, "Zpracování nelze použít", str(error))
 
+    @with_busy_cursor
     def _reset(self, ids: list[str]) -> None:
         if not ids:
             return

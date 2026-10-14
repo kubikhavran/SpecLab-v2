@@ -15,6 +15,7 @@ from PySide6.QtCore import QMarginsF, QRectF, QSize, QSizeF
 from PySide6.QtGui import QColor, QImage, QPageSize, QPainter, QPdfWriter
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
+    QGraphicsWidget,
     QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
@@ -298,7 +299,19 @@ class ExportPanel(QWidget):
         bounds = plot_item.sceneBoundingRect()
         if not bounds.isValid() or bounds.isEmpty():
             raise ValueError('Graf nemá vykreslitelnou plochu.')
-        plot_item.scene().render(painter, target, bounds)
+        if not isinstance(plot_item, QGraphicsWidget):
+            plot_item.scene().render(painter, target, bounds)
+            return
+        # Lay the plot out at the export aspect ratio (keeping the on-screen
+        # height) so axes and labels fill the canvas instead of being letterboxed.
+        original = plot_item.geometry()
+        layout = QRectF(original.x(), original.y(),
+                        original.height() * width / height, original.height())
+        plot_item.setGeometry(layout)
+        try:
+            plot_item.scene().render(painter, target, plot_item.mapRectToScene(plot_item.boundingRect()))
+        finally:
+            plot_item.setGeometry(original)
 
     def _export_png(self, plot_item, path, width, height, transparent=False):
         image = QImage(QSize(width, height), QImage.Format.Format_ARGB32)

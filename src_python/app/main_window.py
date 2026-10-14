@@ -53,6 +53,7 @@ from ui.presets_panel import PresetsPanel
 from ui.processing_panel import ProcessingPanel
 from ui.smoothing_panel import SmoothingPanel
 from ui.theme import STYLESHEET
+from ui.busy import with_busy_cursor
 
 ACCEPTED_EXTENSIONS = {
     ".txt",
@@ -74,6 +75,54 @@ TECHNIQUES = {
     "uv_vis": "UV–Vis",
     "custom": "Vlastní",
 }
+# Provenance records stay in English inside project files; the UI shows Czech.
+HISTORY_LABELS = {
+    "Import spectra": "Import spekter",
+    "Remove spectra": "Odebrání spekter",
+    "Clear spectra": "Vymazání všech spekter",
+    "Rename spectra": "Přejmenování",
+    "Reorder spectra": "Změna pořadí",
+    "Change spectrum metadata": "Změna typu měření",
+    "Restore original data": "Návrat k původním datům",
+    "Remove baseline": "Odebrání baseline",
+    "Remove smooth": "Odebrání vyhlazení",
+    "Remove despike": "Odebrání úpravy spiků",
+    "Apply preset from original data": "Preset z původních dat",
+    "Apply preset settings": "Nastavení z presetu",
+    "Edit peak label": "Úprava popisku píku",
+    "Move peak label": "Posun popisku píku",
+    "Reset peak label positions": "Výchozí pozice popisků",
+    "Add manual peak": "Ruční pík",
+    "Detect peaks": "Detekce píků",
+    "Clear peaks": "Smazání píků",
+    "Remove peak": "Odebrání píku",
+}
+OPERATION_LABELS = {
+    "baseline": "Baseline",
+    "smooth": "Vyhlazení",
+    "despike": "Odstranění spiků",
+    "normalize": "Normalizace",
+    "derivative": "Derivace",
+    "convert_y": "Převod Y",
+    "crop": "Ořez",
+    "resample": "Převzorkování",
+    "shift": "Posun",
+    "interpolate": "Interpolace",
+}
+SOURCE_LABELS = {"manual": "ručně", "ai": "AI", "preset": "preset"}
+PEAK_SOURCES = {"auto": "auto", "manual": "ruční"}
+
+
+def history_text(record: dict) -> str:
+    label = str(record.get("label", "Úprava"))
+    label = HISTORY_LABELS.get(
+        label, " → ".join(OPERATION_LABELS.get(part, part) for part in label.split(" → "))
+    )
+    prefix = {"undo": "↶ Zpět: ", "redo": "↷ Znovu: "}.get(record.get("action"), "")
+    source = record.get("source", "manual")
+    return f"{prefix}{label} · {SOURCE_LABELS.get(source, source)}"
+
+
 Y_KINDS = {
     "intensity": "Intenzita (a.u.)",
     "absorbance": "Absorbance",
@@ -517,9 +566,7 @@ class MainWindow(QMainWindow):
             self._refresh_peaks()
             self.history_list.clear()
             for record in reversed(state.history):
-                item = QListWidgetItem(
-                    f"{record.get('label', 'Úprava')} · {record.get('source', 'manual')}"
-                )
+                item = QListWidgetItem(history_text(record))
                 item.setToolTip(
                     json.dumps(record, indent=2, ensure_ascii=False, default=str)
                 )
@@ -552,7 +599,7 @@ class MainWindow(QMainWindow):
                     f"{peak.x:.6g}",
                     f"{ordinate:.8g}",
                     peak.label or "",
-                    peak.source,
+                    PEAK_SOURCES.get(peak.source, peak.source),
                     "" if peak.prominence is None else f"{peak.prominence:.6g}",
                     "" if peak.width is None else f"{peak.width:.6g}",
                 ]
@@ -678,6 +725,7 @@ class MainWindow(QMainWindow):
         if paths:
             self._load_files(paths)
 
+    @with_busy_cursor
     def _load_files(self, paths):
         errors = []
         count = 0
@@ -758,6 +806,7 @@ class MainWindow(QMainWindow):
             else:
                 self._state.set_plot(**values)
 
+    @with_busy_cursor
     def _open_project(self):
         if not self._confirm_unsaved():
             return
@@ -779,6 +828,7 @@ class MainWindow(QMainWindow):
         finally:
             self._suspend_auto_axes = False
 
+    @with_busy_cursor
     def _save_project(self, save_as=False):
         path = None if save_as is True else self._project_path
         if not path:
