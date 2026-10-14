@@ -11,8 +11,8 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import numpy as np
-from PySide6.QtCore import QMarginsF, QRectF, QSize, QSizeF
-from PySide6.QtGui import QColor, QImage, QPageSize, QPainter, QPdfWriter
+from PySide6.QtCore import Qt, QMarginsF, QRectF, QSize, QSizeF
+from PySide6.QtGui import QColor, QImage, QPageSize, QPainter, QPdfWriter, QPixmap
 from PySide6.QtSvg import QSvgGenerator
 from PySide6.QtWidgets import (
     QGraphicsWidget,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 from app.state import AppState
+from ui.busy import with_busy_cursor
 
 
 _EXTENSIONS = {'.png', '.svg', '.pdf', '.csv', '.tsv', '.zip'}
@@ -180,10 +181,13 @@ class ExportPanel(QWidget):
         inner = QVBoxLayout(group)
         self._chk_transparent = QCheckBox('Průhledné pozadí (PNG / SVG)')
         inner.addWidget(self._chk_transparent)
+        preview = QPushButton('Náhled publikačního obrázku…')
+        preview.clicked.connect(self._preview_figure)
+        inner.addWidget(preview)
         self._button_row(inner, [('PNG', lambda: self._export_image('png')),
                                  ('SVG', lambda: self._export_image('svg')),
                                  ('PDF', lambda: self._export_image('pdf'))])
-        self._img_info = QLabel('Rozměry plátna se nastavují v části Vzhled.')
+        self._img_info = QLabel('Obrázek se sází pro tisk (300 dpi); rozměry v pixelech se nastavují v části Vzhled.')
         self._img_info.setWordWrap(True)
         inner.addWidget(self._img_info)
         layout.addWidget(group)
@@ -255,37 +259,66 @@ class ExportPanel(QWidget):
         self._state.set_last_folder(str(Path(path).parent), context)
         return path
 
+    def _figure(self):
+        from core.figure import figure_spec, render
+
+        if not self._state.spectra:
+            raise ValueError('Nejprve načtěte spektra.')
+        width, height = int(self._state.graphics.export_width), int(self._state.graphics.export_height)
+        if not (300 <= width <= 8000 and 300 <= height <= 8000):
+            raise ValueError('Šířka a výška plátna musí být v rozmezí 300 až 8000 pixelů.')
+        return render(figure_spec(self._state), width, height, dpi=300,
+                      transparent=self._chk_transparent.isChecked())
+
+    @with_busy_cursor
     def _export_image(self, fmt):
-        wrapper = self._get_plot_widget() if self._get_plot_widget else None
-        if wrapper is None:
-            self._img_info.setText('Graf není dostupný.')
-            return
-        hidden = []
+        """Typeset the current view as a publication figure (matplotlib)."""
+        from core.figure import save
+
         try:
-            width, height = int(self._state.graphics.export_width), int(self._state.graphics.export_height)
-            if not (300 <= width <= 8000 and 300 <= height <= 8000):
-                raise ValueError('Šířka a výška plátna musí být v rozmezí 300 až 8000 pixelů.')
             path = self._output_path(self._get_base_name(), fmt, 'image')
             if not path:
                 return
-            for attr in ('_vline', '_hline'):
-                item = getattr(wrapper, attr, None)
-                if item is not None:
-                    hidden.append((item, item.isVisible()))
-                    item.hide()
-            transparent = self._chk_transparent.isChecked()
-            if fmt == 'png':
-                self._export_png(wrapper._plot_item, path, width, height, transparent)
-            elif fmt == 'svg':
-                self._export_svg(wrapper._plot_item, path, width, height, transparent)
-            else:
-                self._export_pdf(wrapper._plot_item, path, width, height)
-            self._img_info.setText(f'Uloženo: {Path(path).name} · {width} × {height}')
+            figure = self._figure()
+            save(figure, path, transparent=self._chk_transparent.isChecked())
+            if not Path(path).is_file() or not Path(path).stat().st_size:
+                raise OSError('Soubor se nepodařilo uložit.')
+            dropped = getattr(figure, '_speclab_dropped_labels', 0)
+            note = f' · {dropped} slabých pásů bez popisku (málo místa)' if dropped else ''
+            self._img_info.setText(f'Uloženo: {Path(path).name}{note}')
         except (OSError, ValueError, RuntimeError) as exc:
             self._img_info.setText(f'Export se nezdařil: {exc}')
-        finally:
-            for item, visible in hidden:
-                item.setVisible(visible)
+
+    @with_busy_cursor
+    def _preview_figure(self):
+        from PySide6.QtWidgets import QDialog, QScrollArea
+
+        try:
+            figure = self._figure()
+        except (ValueError, RuntimeError) as exc:
+            self._img_info.setText(f'Náhled nelze vytvořit: {exc}')
+            return
+        figure.canvas.draw()
+        buffer = figure.canvas.buffer_rgba()
+        height, width = buffer.shape[:2]
+        image = QImage(bytes(buffer), width, height, 4 * width, QImage.Format.Format_RGBA8888).copy()
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Náhled publikačního obrázku')
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        label.setPixmap(QPixmap.fromImage(image).scaled(
+            min(width, 1400), min(height, 860), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        area = QScrollArea()
+        area.setWidget(label)
+        area.setWidgetResizable(True)
+        layout.addWidget(area)
+        dropped = getattr(figure, '_speclab_dropped_labels', 0)
+        info = QLabel(f'{width} × {height} px při 300 dpi'
+                      + (f' · {dropped} slabých pásů bez popisku kvůli místu' if dropped else ''))
+        layout.addWidget(info)
+        dialog.resize(min(width, 1400) + 40, min(height, 860) + 80)
+        dialog.exec()
 
     @staticmethod
     def _render(plot_item, painter, width, height, transparent=False):

@@ -11,6 +11,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 from app.models import AXIS_Y_LABELS
 from app.state import LABEL_OFFSETS
+from core.label_layout import LabelRequest, LayoutStyle, layout_with_thinning
 from core.palettes import get_color_for_index, get_palette_colors
 from core.sampling import with_gap_breaks
 
@@ -33,7 +34,6 @@ def axis_html(text):
 
 
 LABEL_GAP_PX = 6        # free space between the curve and a label
-LEGEND_SCALE = 2.0      # legend px per tick-font pt (see _style)
 LEADER_KINK_PX = 12     # vertical part of an elbow leader line
 
 
@@ -47,55 +47,6 @@ def label_anchor(angle: float, upward: bool) -> tuple[float, float]:
     if abs(sine) > 0.5:
         return (0.0, 0.5) if (sine > 0) == upward else (1.0, 0.5)
     return (0.5, 1.0) if upward else (0.5, 0.0)
-
-
-# Candidate moves for a colliding label, cheapest first: (sideways steps, outward steps).
-_LABEL_MOVES = sorted(
-    ((dx, dy) for dx in range(-3, 4) for dy in range(0, 7)),
-    key=lambda move: (abs(move[0]) + 0.7 * move[1], abs(move[0])),
-)
-
-
-def place_labels(requests, gap, bounds=None):
-    """Greedy collision-free placement of peak labels.
-
-    Each request: dict(px, py, upward, width, height, x, y, importance) in data
-    units, x ascending. Labels stay next to their own band; on collision a label
-    moves sideways or further from the curve. A label that fits nowhere inside
-    ``bounds`` (x0, x1, y0, y1) is reported as None and should be hidden.
-    Stronger bands are placed first. Returns (x, base) or None per request.
-    """
-    placed = np.empty((0, 4))
-    result = [None] * len(requests)
-    order = sorted(range(len(requests)), key=lambda i: -requests[i]["importance"])
-    for index in order:
-        r = requests[index]
-        sign = 1.0 if r["upward"] else -1.0
-        width, height = r["width"], r["height"]
-        best = None
-        for dx_steps, dy_steps in _LABEL_MOVES:
-            x = r["px"] + dx_steps * 0.55 * width
-            low, high = min(r["px"], x - width / 2), max(r["px"], x + width / 2)
-            a, b = np.searchsorted(r["x"], [low, high])
-            window = r["y"][a:b]
-            edge = r["py"] if not len(window) else (max(window.max(), r["py"]) if sign > 0 else min(window.min(), r["py"]))
-            base = edge + sign * (gap + dy_steps * 0.45 * height)
-            y0, y1 = sorted((base, base + sign * height))
-            rect = (x - width / 2, x + width / 2, y0, y1)
-            if bounds is not None and (rect[0] < bounds[0] or rect[1] > bounds[1]
-                                       or rect[2] < bounds[2] or rect[3] > bounds[3]):
-                continue
-            if not len(placed) or not np.any(
-                (placed[:, 0] < rect[1]) & (placed[:, 1] > rect[0])
-                & (placed[:, 2] < rect[3]) & (placed[:, 3] > rect[2])
-            ):
-                best = (x, base, rect)
-                break
-        if best is None:
-            continue
-        placed = np.vstack([placed, best[2]])
-        result[index] = best[:2]
-    return result
 
 
 class _PeakLabel(pg.TextItem):
@@ -360,9 +311,9 @@ class SpectrumPlotWidget(QWidget):
             spec = state.active_spectrum
             if spec and state.processing_recipe(spec.id):
                 note += " · Původní data mají původní měřítko a jednotky"
-        if self._hidden_labels:
-            note += f" · {self._hidden_labels} popisků píků skryto pro nedostatek místa (přibliž graf)"
-        self._coord_label.setText(note)
+        self._note = note
+        self._show_note()
+        self._coord_label.setText(self._note_text())
 
     def _draw_peaks(self, spec, x, y, color):
         settings = self._state.peaks_settings
@@ -459,7 +410,7 @@ class SpectrumPlotWidget(QWidget):
         self._add(pg.PlotDataItem([middle] * len(points), points, pen=pg.mkPen((0, 0, 0, 0))))
 
     def _layout_labels(self, *_):
-        """Place labels next to their peaks without overlaps at the current zoom."""
+        """Place labels with core.label_layout: no overlaps, no crossing leaders."""
         if not self._labels:
             return
         view = self._plot_item.getViewBox()
@@ -469,52 +420,62 @@ class SpectrumPlotWidget(QWidget):
             return
         if not (np.isfinite(px_w) and np.isfinite(px_h) and px_w > 0 and px_h > 0):
             return
+        direction = -1.0 if self._state.plot.invert_x else 1.0
+        (x0, x1), _ = view.viewRange()
+        low, high = sorted((direction * x0 / px_w, direction * x1 / px_w))
+        style = LayoutStyle(gap=3, stub=6, bend_min=6, bend_max=20, spacing=2, label_gap=2)
         angle = math.radians(self._state.peaks_settings.label_angle_deg)
         sine, cosine = abs(math.sin(angle)), abs(math.cos(angle))
-        free, requests = [], []
+        groups = {}
         for label in self._labels:
-            if label["offset"] is not None:
+            if label["offset"] is not None:   # dragged by hand: keep it there
                 lx = label["px"] + label["offset"][0]
                 ly = label["py"] + label["offset"][1]
                 label["item"].setPos(lx, ly)
+                label["item"].setVisible(True)
                 if label["leader"] is not None:
                     label["leader"].setData([label["px"], lx], [label["py"], ly])
+                    label["leader"].setVisible(True)
                 continue
-            rect = label["item"].textItem.boundingRect()
-            x, y = label["x"], label["y"]
-            if x[0] > x[-1]:
-                x, y = x[::-1], y[::-1]
-            free.append(label)
-            requests.append({
-                "px": label["px"], "py": label["py"], "upward": label["upward"],
-                "width": (cosine * rect.width() + sine * rect.height() + 2) * px_w,
-                "height": (sine * rect.width() + cosine * rect.height()) * px_h,
-                "x": x, "y": y, "importance": label["importance"],
-            })
-        (x0, x1), (y0, y1) = view.viewRange()
-        positions = place_labels(requests, LABEL_GAP_PX * px_h, (min(x0, x1), max(x0, x1), y0, y1))
-        self._hidden_labels = sum(position is None for position in positions)
-        for label, position in zip(free, positions):
-            visible = position is not None
-            label["item"].setVisible(visible)
-            if label["leader"] is not None:
-                label["leader"].setVisible(visible)
-            if not visible:
-                continue
-            x_label, base = position
-            sign = 1.0 if label["upward"] else -1.0
-            label["item"].setPos(x_label, base)
-            if label["leader"] is None:
-                continue
-            start = label["py"] + sign * 3 * px_h
-            end = base - sign * 2 * px_h
-            if abs(x_label - label["px"]) < px_w:
-                label["leader"].setData([label["px"], label["px"]], [start, end])
-                continue
-            kink = end - sign * LEADER_KINK_PX * px_h
-            if sign * (kink - start) < 0:
-                kink = start
-            label["leader"].setData([label["px"], label["px"], x_label], [start, kink, end])
+            groups.setdefault((id(label["x"]), label["upward"]), []).append(label)
+        hidden = 0
+        for (_key, upward), labels in groups.items():
+            sign = 1.0 if upward else -1.0
+            x, y = labels[0]["x"], labels[0]["y"]
+            cx = direction * x / px_w
+            order = np.argsort(cx)
+            cx, cy = cx[order], sign * y[order] / px_h
+            requests = []
+            for label in labels:
+                rect = label["item"].textItem.boundingRect()
+                requests.append(LabelRequest(
+                    direction * label["px"] / px_w, sign * label["py"] / px_h,
+                    cosine * rect.width() + sine * rect.height(),
+                    sine * rect.width() + cosine * rect.height(), label["importance"]))
+            kept = layout_with_thinning(requests, cx, cy, low, high, style)
+            for index, label in enumerate(labels):
+                placement = kept.get(index)
+                label["item"].setVisible(placement is not None)
+                if label["leader"] is not None:
+                    label["leader"].setVisible(placement is not None)
+                if placement is None:
+                    hidden += 1
+                    continue
+                label["item"].setPos(direction * placement.x * px_w, sign * placement.base * px_h)
+                if label["leader"] is not None:
+                    points = np.asarray(placement.leader)
+                    label["leader"].setData(direction * points[:, 0] * px_w, sign * points[:, 1] * px_h)
+        self._hidden_labels = hidden
+        self._show_note()
+
+    def _note_text(self):
+        note = getattr(self, "_note", "")
+        if self._hidden_labels:
+            note += f" · {self._hidden_labels} popisků píků skryto pro nedostatek místa (přibliž graf)"
+        return note
+
+    def _show_note(self):
+        self._coord_label.setText(self._note_text())
 
     def _style(self):
         g = self._state.graphics
@@ -538,10 +499,7 @@ class SpectrumPlotWidget(QWidget):
         if g.axis_label_italic:
             style["font-style"] = "italic"
         if pi.legend is not None:
-            # Legend labels are HTML text items, which render smaller than the
-            # QFont used for ticks; this factor was measured so legend glyphs come
-            # out at ~80 % of the tick-label height in exported figures.
-            pi.legend.setLabelTextSize(f"{round(font.pointSizeF() * LEGEND_SCALE)}px")
+            pi.legend.setLabelTextSize(f"{font.pointSize()}pt")
         pi.setLabel("bottom", axis_html(g.x_label), **style)
         y_label = g.y_label
         active = self._state.active_spectrum
