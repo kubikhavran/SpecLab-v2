@@ -40,7 +40,7 @@ from .models import (
 # operation rescales the ordinate; such operations reset them.
 LABEL_OFFSETS = 'peak_label_offsets'
 _LEGACY_LABEL_POSITIONS = 'peak_label_positions'   # absolute plot coordinates
-_RESCALING_OPS = {'normalize', 'convert_y', 'derivative'}
+_RESCALING_OPS = {'normalize', 'convert_y', 'derivative', 'scale'}
 
 
 def _rescales(operations) -> bool:
@@ -353,43 +353,55 @@ class AppState(QObject):
 
     # ── Settings mutations (we'll expand these as panels are built) ──
 
+    def _invalidate_workflow_settings(self, settings, changes):
+        if (self._preview is not None and self._preview.get('workflow')
+                and any(hasattr(settings,k) and getattr(settings,k) != v for k,v in changes.items())):
+            self.clear_preview()
+
     def set_plot(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._plot, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._plot, k):
                 setattr(self._plot, k, v)
         self.plot_changed.emit()
 
     def set_graphics(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._graphics, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._graphics, k):
                 setattr(self._graphics, k, v)
         self.graphics_changed.emit()
 
     def set_baseline(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._baseline, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._baseline, k):
                 setattr(self._baseline, k, v)
         self.baseline_changed.emit()
 
     def set_smoothing(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._smoothing, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._smoothing, k):
                 setattr(self._smoothing, k, v)
         self.smoothing_changed.emit()
 
     def set_cosmic(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._cosmic, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._cosmic, k):
                 setattr(self._cosmic, k, v)
         self.cosmic_changed.emit()
 
     def set_peaks(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._peaks, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._peaks, k):
                 setattr(self._peaks, k, v)
         self.peaks_changed.emit()
 
     def set_export(self, **kwargs) -> None:
+        self._invalidate_workflow_settings(self._export, kwargs)
         for k, v in kwargs.items():
             if hasattr(self._export, k):
                 setattr(self._export, k, v)
@@ -472,6 +484,9 @@ class AppState(QObject):
         result.setdefault('technique', 'custom')
         result.setdefault('y_kind', 'intensity')
         result.setdefault('x_unit', 'unknown')
+        if 'trace_style' in result:
+            from core.collection import validate_style
+            result['trace_style'] = validate_style(result['trace_style'])
         if not isinstance(result['technique'], str) or result['technique'] not in {'raman', 'infrared', 'uv_vis', 'custom'}:
             raise ValueError('Neznámá spektrální technika.')
         if not isinstance(result['y_kind'], str) or result['y_kind'] not in {
@@ -497,6 +512,7 @@ class AppState(QObject):
         self.clear_preview()
 
     def clear_preview(self) -> None:
+        self._workflow_target = None
         if self._preview is not None:
             self._preview = None
             self.preview_changed.emit()
@@ -606,6 +622,15 @@ class AppState(QObject):
             raise ValueError('Není k dispozici náhled k použití.')
         if preview != self._preview:
             raise ValueError('Náhled byl změněn nebo nahrazen; vytvoř nový náhled.')
+        if preview.get('workflow'):
+            if (preview['revision'] != self._revision or self._workflow_target is None
+                    or preview['signature'] != self._workflow_signature()):
+                self.clear_preview()
+                raise ValueError('Pracovní prostor se po náhledu změnil. Vytvoř nový náhled.')
+            before = self._snapshot()
+            self._restore(self._workflow_target)
+            return self._record_transaction(before, preview['label'], preview['source'],
+                                            preview['operations'], preview['spectrum_ids'])
         ids = preview['spectrum_ids']
         if preview['revision'] != self._revision or preview['signature'] != self._data_signature(ids):
             self.clear_preview()
@@ -631,6 +656,11 @@ class AppState(QObject):
                 if baseline is not None and len(baseline) == len(spec.y):
                     self.baseline_y[spec.id] = list(baseline)
             self._refresh_manual_indices(spec)
+        for operation in preview['operations']:
+            settings = {'baseline':self._baseline,'smooth':self._smoothing,'despike':self._cosmic}.get(operation['op'])
+            if settings is not None:
+                for key,value in operation['params'].items():
+                    setattr(settings,'lambda_' if key == 'lam' else key,value)
         self._baseline.enabled = any(op['op'] == 'baseline' for recipe in self._recipes.values() for op in recipe)
         return self._record_transaction(before, preview['label'], preview['source'],
                                         preview['operations'], ids)
@@ -666,6 +696,8 @@ class AppState(QObject):
         def scale(recipe):
             return [op for op in recipe if op['op'] in _RESCALING_OPS]
 
+        if 'trace_style' in old_meta:
+            new_meta['trace_style'] = copy.deepcopy(old_meta['trace_style'])
         if LABEL_OFFSETS in old_meta and scale(old_recipe) == scale(new_recipe):
             new_meta[LABEL_OFFSETS] = copy.deepcopy(old_meta[LABEL_OFFSETS])
 
@@ -691,7 +723,8 @@ class AppState(QObject):
         """Remove one processing stage and replay subsequent operations from originals."""
         from core.processing import run_operations
 
-        if operation not in {'baseline', 'smooth', 'despike'}:
+        from core.processing import DEFAULTS
+        if operation not in DEFAULTS:
             raise ValueError('Tuto fázi zpracování nelze obnovit samostatně.')
         selected = self._resolve_ids(ids)
         results, recipes = {}, {}
@@ -705,7 +738,6 @@ class AppState(QObject):
             if spec.id not in selected:
                 continue
             result = results[spec.id]
-            # Only baseline/smooth/despike can be removed here; the Y scale is unchanged.
             self._carry_peak_positions(spec.meta, result['meta'],
                                        self._recipes.get(spec.id, []), recipes[spec.id])
             spec.x, spec.y, spec.meta = result['x'], result['y'], result['meta']
@@ -715,6 +747,91 @@ class AppState(QObject):
             self._refresh_manual_indices(spec)
         self._baseline.enabled = any(op['op'] == 'baseline' for recipe in self._recipes.values() for op in recipe)
         return self._record_transaction(before, f'Remove {operation}', 'manual', [], selected)
+
+    def _workflow_signature(self):
+        """Include non-transactional settings so a staged plan cannot overwrite later edits."""
+        from core.project_io import SETTINGS
+        payload = {key: asdict(getattr(self, attr)) for key, (attr, _) in SETTINGS.items()}
+        payload['collection'] = [(s.id, s.name) for s in self.spectra]
+        payload['active'] = self.active_spectrum_id
+        payload['export'] = asdict(self._export)
+        payload['spectral_mode'] = self.spectral_mode
+        payload['annotations'] = {sid: [asdict(p) for p in self.peaks_auto.get(sid, [])
+                                 + self.peaks_manual.get(sid, [])] for sid in [s.id for s in self.spectra]}
+        return self._data_signature([s.id for s in self.spectra]) + json.dumps(payload, sort_keys=True)
+
+    def preview_workflow(self, operations=None, presentation=None, collection=None,
+                         spectrum_ids=None, source='manual', label='Pracovní postup'):
+        """Calculate an entire plan on isolated state; commit data and style atomically."""
+        from core.collection import validate_collection
+        if source not in {"manual","ai","preset"}:
+            raise ValueError("Neznámý původ pracovního postupu.")
+        ids = self._resolve_ids(spectrum_ids)
+        staged = AppState()
+        staged._restore(self._snapshot())
+        operations = operations or []
+        if operations:
+            staged.apply_operations(operations, ids, source=source, label=label)
+        if presentation:
+            staged.apply_presentation(presentation, ids)
+        if collection:
+            validate_collection(collection, [s.id for s in staged.spectra])
+            # A scoped proposal may style and rename only its captured targets.
+            if any(sid not in ids for key in ('rename', 'styles') for sid in collection.get(key, {})):
+                raise ValueError('Změna názvů nebo čar přesahuje vybraný rozsah spekter.')
+            for spec in staged.spectra:
+                if spec.id in collection.get('rename', {}):
+                    spec.name = collection['rename'][spec.id].strip()
+                if spec.id in collection.get('styles', {}):
+                    spec.meta['trace_style'] = dict(collection['styles'][spec.id])
+            if 'order' in collection:
+                by_id = {s.id: s for s in staged.spectra}
+                staged._spectra = [by_id[sid] for sid in collection['order']]
+        if not (operations or presentation or collection):
+            raise ValueError('Návrh neobsahuje žádné úpravy.')
+        target = staged._snapshot()
+        proposal = {'id': uuid.uuid4().hex, 'revision': self.revision,
+                    'signature': self._workflow_signature(), 'workflow': True,
+                    'spectrum_ids': ids, 'operations': copy.deepcopy(operations),
+                    'source': source, 'label': label,
+                    'results': {s.id: {'x': s.x, 'y': staged.displayed_y(s.id), 'meta': s.meta}
+                                for s in staged.spectra if s.id in ids} if operations else {}}
+        self.clear_preview()
+        self._workflow_target = target
+        self._preview = self._copy_preview(proposal)
+        self.preview_changed.emit()
+        return self.preview
+
+    def preview_state(self):
+        if getattr(self, '_workflow_target', None) is None:
+            return None
+        staged = AppState()
+        staged._restore(self._workflow_target)
+        return staged
+
+    def reorder_spectra(self, ids):
+        from core.collection import validate_collection
+        validate_collection({'order': ids}, [s.id for s in self.spectra])
+        if ids == [s.id for s in self.spectra]:
+            return
+        before = self._snapshot()
+        by_id = {s.id: s for s in self.spectra}
+        self._spectra = [by_id[sid] for sid in ids]
+        self._record_transaction(before, 'Reorder spectra', 'manual', [], ids)
+
+    def commit_settings(self, settings, label='Vzhled grafu'):
+        """Validate first, then record a cosmetic edit as one undo step."""
+        from core.project_io import SETTINGS, settings_from_dict
+        checked = {}
+        for key, value in settings.items():
+            if key not in SETTINGS:
+                raise ValueError('Neznámá sekce nastavení.')
+            attr, cls = SETTINGS[key]
+            checked[attr] = settings_from_dict(cls, {**asdict(getattr(self, attr)), **value})
+        before = self._snapshot()
+        for attr, value in checked.items():
+            setattr(self, attr, value)
+        return self._record_transaction(before, label, 'manual', [], [s.id for s in self.spectra])
 
     def apply_preset(self, settings: dict, recipe: Optional[list[dict]] = None,
                      detect_auto: bool = False) -> dict:

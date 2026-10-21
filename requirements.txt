@@ -3,5 +3,6 @@ scipy>=1.11
 PySide6>=6.6
 pyqtgraph>=0.13.3
 certifi>=2023.7.22
+matplotlib>=3.9  # Existing publication renderer
 
 # Tests need pytest; lint uses ruff.

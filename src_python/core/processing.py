@@ -35,6 +35,7 @@ DEFAULTS = {
     'crop': {'min': None, 'max': None},
     'resample': {'step': None},
     'shift': {'x': 0.0, 'y': 0.0},
+    'scale': {'factor': 1.0},
     'interpolate': {'min': None, 'max': None},
 }
 
@@ -110,6 +111,10 @@ def validate_operations(operations) -> list[dict]:
         if op == 'shift':
             _number(p['x'], 'x')
             _number(p['y'], 'y')
+        if op == 'scale':
+            _number(p['factor'], 'factor')
+            if p['factor'] == 0:
+                raise ProcessingError('Násobek intenzity nesmí být nula.')
         validated.append({'op': op, 'params': p})
     return validated
 
@@ -382,6 +387,9 @@ def run_operations(x, y, meta, operations) -> dict:
             else:
                 new_y = np.interp(sampled, x[::-1], y[::-1])
             x, y = sampled, new_y
+        elif op == 'scale':
+            y = y * p['factor']
+            _derived(meta, 'scale')
         elif op == 'shift':
             x, y = x + p['x'], y + p['y']
             if p['y'] != 0:

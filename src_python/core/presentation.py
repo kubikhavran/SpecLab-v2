@@ -7,7 +7,7 @@ presets and projects, so a plan can never touch export paths or data.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 from app.models import GraphicsSettings, PeaksSettings, PlotSettings
 from core.palettes import _FIXED, _GRADIENT
@@ -16,18 +16,9 @@ from core.project_io import settings_from_dict
 FONT_FAMILIES = ("Arial", "Inter", "Times New Roman", "Courier New")
 PALETTES = ("auto", *_FIXED, *_GRADIENT)
 ALLOWED = {
-    "graphics": (GraphicsSettings, {
-        "x_label", "y_label", "axis_label_bold", "font_family", "base_font_size",
-        "tick_font_size", "trace_line_width", "axis_line_width", "show_grid",
-        "frame_mode", "palette", "inline_spectrum_labels", "show_x_tick_labels",
-        "show_y_tick_labels", "show_x_tick_marks", "show_y_tick_marks",
-    }),
-    "peaks": (PeaksSettings, {
-        "polarity", "min_prominence", "min_distance", "max_peaks", "decimals",
-        "show_labels", "show_markers", "show_leader_lines", "label_angle_deg",
-        "label_font_size", "label_bold", "label_italic", "label_color_mode",
-    }),
-    "plot": (PlotSettings, {"invert_x", "show_grid"}),
+    "graphics": (GraphicsSettings, {f.name for f in fields(GraphicsSettings)}),
+    "peaks": (PeaksSettings, {f.name for f in fields(PeaksSettings)}),
+    "plot": (PlotSettings, {f.name for f in fields(PlotSettings)}),
 }
 STATE_ATTRS = {"graphics": "graphics", "peaks": "peaks_settings", "plot": "plot"}
 

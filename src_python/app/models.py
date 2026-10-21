@@ -26,6 +26,7 @@ class PlotSettings:
     show_all_spectra: bool = False
     reverse_overlay_order: bool = False
     stack_offset: float = 0.0
+    scale_mode: str = "common"  # display only: common ordinate / each curve 0..1
     x_min: Optional[float] = None
     x_max: Optional[float] = None
     y_min: Optional[float] = None

@@ -2,7 +2,7 @@
 
 Vizuální směr: klidný světlý laboratorní pracovní prostor, jemné šedé plochy, jeden petrolejový akcent a graf jako hlavní obsah.
 
-Rozvržení: nahoře souborové akce a historie, vlevo knihovna spekter s jednotkami konkrétního měření, uprostřed graf a tabulky, vpravo inspektor zpracování / AI / vzhledu / exportu / předvoleb. Žádná marketingová úvodní obrazovka.
+Rozvržení: nahoře souborové akce a Zpět/Znovu; vlevo jedenáct kroků pracovního postupu, uprostřed graf s výběrem spekter a rozsahu aplikace, vpravo jen aktuální krok. Knihovna spekter je prvním krokem, grafika je oddělená od zpracování dat a preset uzavírá export. AI asistent dočasně nahradí panel kroku. Tabulky, historie a integrace se rozbalují na vyžádání. Podrobný rozpis: [workflow.md](workflow.md). Žádná marketingová úvodní obrazovka.
 
 Interakce: plynulý zoom grafu, přetahování popisků píků a okamžité porovnání aktuálních dat s návrhem. Animace čísel a dekorací by zhoršovala přesnost odečítání; hlavní přechody jsou změna záložky a náhled křivky.
 

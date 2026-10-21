@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QDockWidget,
+    QStackedWidget,
+    QLineEdit,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -43,23 +46,21 @@ from core.spectrum_parser import (
     parse_spectrum_files,
 )
 from ui.ai_panel import AIPanel
-from ui.baseline_panel import BaselinePanel
-from ui.cosmic_panel import CosmicPanel
 from ui.export_panel import ExportPanel
-from ui.graphics_panel import GraphicsPanel
 from ui.peaks_panel import PeaksPanel
 from ui.plot_widget import SpectrumPlotWidget
 from ui.presets_panel import PresetsPanel
-from ui.processing_panel import ProcessingPanel
-from ui.smoothing_panel import SmoothingPanel
 from ui.theme import STYLESHEET
 from ui.busy import with_busy_cursor
+from ui.workflow import DataStep, AppearanceStep, note
+from ui.controls import NumberField
 
 ACCEPTED_EXTENSIONS = {
     ".txt",
     ".csv",
     ".tsv",
     ".dat",
+    ".dpt",
     ".asc",
     ".xy",
     ".spc",
@@ -69,7 +70,7 @@ ACCEPTED_EXTENSIONS = {
     ".jdx",
     ".dx",
 }
-FILE_FILTER = "Spektra (*.txt *.csv *.tsv *.dat *.asc *.xy *.spc *.spa *.spg *.wdf *.jdx *.dx);;Všechny soubory (*)"
+FILE_FILTER = "Spektra (*.txt *.csv *.tsv *.dat *.dpt *.asc *.xy *.spc *.spa *.spg *.wdf *.jdx *.dx);;Všechny soubory (*)"
 TECHNIQUES = {
     "raman": "Raman",
     "infrared": "IR",
@@ -109,6 +110,7 @@ OPERATION_LABELS = {
     "resample": "Převzorkování",
     "shift": "Posun",
     "interpolate": "Interpolace",
+    "scale": "Násobení intenzity",
 }
 SOURCE_LABELS = {"manual": "ručně", "ai": "AI", "preset": "preset"}
 PEAK_SOURCES = {"auto": "auto", "manual": "ruční"}
@@ -178,12 +180,22 @@ def scroll(widget):
     widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     # Wide numeric ranges make Qt request very wide inputs; let the inspector width win.
     for field in widget.findChildren(QAbstractSpinBox) + widget.findChildren(QComboBox):
+        if isinstance(field.parentWidget(), NumberField):
+            continue
         field.setMinimumWidth(64)
         field.setSizePolicy(QSizePolicy.Policy.Ignored, field.sizePolicy().verticalPolicy())
     layout.addWidget(widget)
     layout.addStretch()
     area.setWidget(container)
     return area
+
+
+class SpectrumList(QListWidget):
+    orderChanged = Signal(list)
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.orderChanged.emit([self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())])
 
 
 class MainWindow(QMainWindow):
@@ -237,12 +249,25 @@ class MainWindow(QMainWindow):
         row.addWidget(button("Importovat", self._open_files, True))
         root.addWidget(header)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._library())
+        splitter.addWidget(self._navigation())
         splitter.addWidget(self._center())
-        splitter.addWidget(self._inspector())
-        splitter.setSizes([255, 860, 385])
+        self.step_inspector = self._inspector()
+        splitter.addWidget(self.step_inspector)
+        splitter.setSizes([210, 850, 360])
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
+        self.ai_panel = AIPanel(self._state)
+        self.ai_panel.get_ids = self._target_ids
+        self.ai_dock = QDockWidget("AI asistent · pracovní postup", self)
+        self.ai_dock.setObjectName("aiAssistant")
+        self.ai_dock.setWidget(scroll(self.ai_panel))
+        self.ai_dock.setMinimumWidth(350)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.ai_dock)
+        self.ai_dock.hide()
+        self.ai_dock.visibilityChanged.connect(lambda visible:self.step_inspector.setVisible(not visible))
+        ai = button("AI asistent", lambda: self.ai_dock.setVisible(not self.ai_dock.isVisible()))
+        row.insertWidget(row.count() - 1, ai)
+        self._go_step(0)
         self.setCentralWidget(workspace)
         self.statusBar().showMessage(
             "Připraveno · přetáhni spektra do okna nebo je importuj"
@@ -271,7 +296,7 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("library")
         panel.setMinimumWidth(220)
-        panel.setMaximumWidth(400)
+        panel.setMaximumWidth(520)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 22, 18, 18)
         layout.setSpacing(12)
@@ -281,7 +306,17 @@ class MainWindow(QMainWindow):
         row.addWidget(self.count)
         row.addStretch()
         layout.addLayout(row)
-        self.list = QListWidget()
+        self.list = SpectrumList()
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.orderChanged.connect(self._state.reorder_spectra)
+        self.list.itemSelectionChanged.connect(self._target_caption)
+        self.list.setToolTip("⌘ / Ctrl nebo Shift vybere více spekter. Tažením změníš pořadí; dvojklik přejmenuje.")
+        search = QLineEdit()
+        self.spectrum_search = search
+        search.setPlaceholderText("Hledat spektrum…")
+        search.textChanged.connect(lambda text: [self.list.item(i).setHidden(text.casefold() not in self.list.item(i).text().casefold()) for i in range(self.list.count())])
+        layout.addWidget(search)
         self.list.setWordWrap(True)
         self.list.setMinimumHeight(160)
         self.list.currentRowChanged.connect(self._select_spectrum)
@@ -300,6 +335,10 @@ class MainWindow(QMainWindow):
         row.addWidget(button("Vymazat", self._clear))
         layout.addLayout(row)
         layout.addWidget(button("Hromadné názvy…", self._batch_names))
+        visible = QHBoxLayout()
+        visible.addWidget(button("Zobrazit výběr",lambda:self._show_selection(False)))
+        visible.addWidget(button("Zobrazit vše",lambda:self._show_selection(True)))
+        layout.addLayout(visible)
         layout.addSpacing(8)
         layout.addWidget(label("Měření", "section"))
         form = QFormLayout()
@@ -337,7 +376,24 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(22, 20, 22, 12)
         layout.setSpacing(12)
         row = QHBoxLayout()
+        self.spectrum_picker = QComboBox()
+        self.spectrum_picker.setMinimumWidth(150)
+        self.spectrum_picker.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.spectrum_picker.setMinimumContentsLength(15)
+        self.spectrum_picker.currentIndexChanged.connect(lambda _: self._state.set_active_spectrum(self.spectrum_picker.currentData()) if self.spectrum_picker.currentData() else None)
+        self.scope = QComboBox()
+        self.scope.addItems(["Aktivní spektrum", "Vybraná spektra", "Všechna spektra"])
+        self.scope.currentIndexChanged.connect(self._scope_changed)
+        target_row = QHBoxLayout()
+        target_row.addWidget(label("Spektrum", "muted"))
+        target_row.addWidget(self.spectrum_picker, 1)
+        target_row.addWidget(label("Použít na", "muted"))
+        target_row.addWidget(self.scope)
+        layout.addLayout(target_row)
+        self.target_label = note("Nejprve importuj spektra.")
+        layout.addWidget(self.target_label)
         self.plot_title = label("Spektrální pracovní prostor", "plotTitle")
+        self.plot_title.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred)
         row.addWidget(self.plot_title, 1)
         self.preview_label = label("", "muted")
         row.addWidget(self.preview_label)
@@ -356,25 +412,19 @@ class MainWindow(QMainWindow):
         row.addStretch()
         layout.addLayout(row)
         row = QHBoxLayout()
-        row.addWidget(label("Rozestup křivek", "muted"))
         self.offset = QDoubleSpinBox()
-        self.offset.setRange(-1e9, 1e9)
-        self.offset.setDecimals(4)
-        self.offset.setFixedWidth(105)
+        self.offset.setRange(-1e12, 1e12)
         self.offset.valueChanged.connect(lambda v: self._state.set_plot(stack_offset=v))
-        row.addWidget(self.offset)
-        auto_offset = button("Auto", self._auto_offset)
-        auto_offset.setToolTip("Rozestoupit křivky tak, aby se v překryvu nepřekrývaly")
-        row.addWidget(auto_offset)
-        self.reverse = QCheckBox("Obrátit pořadí")
-        self.reverse.toggled.connect(
-            lambda v: self._state.set_plot(reverse_overlay_order=v)
-        )
-        row.addWidget(self.reverse)
-        row.addStretch()
+        self.reverse = QCheckBox()
+        self.reverse.toggled.connect(lambda v: self._state.set_plot(reverse_overlay_order=v))
         row.addWidget(button("Rozsahy os", self._axis_limits))
         row.addWidget(button("Fit Y", self._plot_fit_y))
-        row.addWidget(button("Přizpůsobit graf", self._fit))
+        row.addWidget(button("Přizpůsobit", self._fit))
+        details_button = QPushButton("Tabulka · historie · integrace")
+        details_button.setCheckable(True)
+        details_button.toggled.connect(lambda shown: self.details.setVisible(shown))
+        row.addWidget(details_button)
+        row.addStretch()
         layout.addLayout(row)
         vertical = QSplitter(Qt.Orientation.Vertical)
         self._plot = SpectrumPlotWidget(self._state)
@@ -441,44 +491,165 @@ class MainWindow(QMainWindow):
         analysis_layout.addStretch()
         self.details.addTab(analysis, "Plocha pásu")
         vertical.addWidget(self.details)
+        self.details.hide()
         vertical.setSizes([600, 200])
         vertical.setStretchFactor(0, 1)
         layout.addWidget(vertical, 1)
         return center
 
+    STEPS = [
+        ("01", "Spektra", "Import, názvy a pořadí"),
+        ("02", "Rozsah a převody", "Jednotky a vzorkování"),
+        ("03", "Spiky", "Artefakty a série"),
+        ("04", "Baseline", "Pozadí spektra"),
+        ("05", "Šum a derivace", "Vyhlazení a derivace"),
+        ("06", "Měřítko dat", "Normalizace, násobení, posun"),
+        ("07", "Píky", "Detekce a ruční anotace"),
+        ("08", "Čáry a barvy", "Celý graf; individuální styl podle výběru"),
+        ("09", "Osy a písmo", "Nastavení celého grafu"),
+        ("10", "Rozložení a popisky", "Měřítko zobrazení a anotace"),
+        ("11", "Export a preset", "Publikační výstup a opakování"),
+    ]
+
+    def _navigation(self):
+        panel = QFrame()
+        panel.setObjectName("workflowNav")
+        panel.setMinimumWidth(190)
+        panel.setMaximumWidth(250)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14,22,14,16)
+        layout.addWidget(label("PRACOVNÍ POSTUP", "eyebrow"))
+        self.step_list = QListWidget()
+        for i, (number,title,subtitle) in enumerate(self.STEPS):
+            item = QListWidgetItem(f"{number}   {title}")
+            item.setToolTip(subtitle)
+            self.step_list.addItem(item)
+        self.step_list.currentRowChanged.connect(self._go_step)
+        layout.addWidget(self.step_list,1)
+        layout.addWidget(note("01–07  ZPRACOVÁNÍ DAT\n08–10  GRAFIKA\n11          DOKONČENÍ"))
+        layout.addWidget(note("Kroky můžeš přeskočit nebo se k nim vrátit. Originály zůstávají uchované."))
+        return panel
+
     def _inspector(self):
         panel = QFrame()
         panel.setObjectName("inspector")
-        panel.setMinimumWidth(335)
-        panel.setMaximumWidth(520)
+        panel.setMinimumWidth(340)
+        panel.setMaximumWidth(480)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 18, 14, 14)
-        tabs = QTabWidget()
-        self.inspector_tabs = tabs
-        processing = QWidget()
-        processing_layout = QVBoxLayout(processing)
-        processing_layout.setContentsMargins(4, 8, 4, 6)
-        self.tool_tabs = QTabWidget()
+        layout.setContentsMargins(18,20,18,14)
+        self.step_heading = label("", "section")
+        self.step_description = note("")
+        layout.addWidget(self.step_heading)
+        layout.addWidget(self.step_description)
+        self.workflow_pages = QStackedWidget()
+        self.inspector_tabs = self.workflow_pages
+        self.tool_tabs = self.workflow_pages
+        self.workflow_pages.addWidget(scroll(self._library()))
+        self.data_steps = []
+        for tools in [ ['crop','convert_y','resample'], ['despike','interpolate'], ['baseline'],
+                       ['smooth','derivative'], ['normalize','scale','shift'] ]:
+            step = DataStep(self._state,tools,self._target_ids)
+            if tools == ['normalize','scale','shift']:
+                restore = button("Obnovit původní data",self._reset_selected_data)
+                restore.setObjectName('reset')
+                restore.setToolTip('Odebere celý recept vybraných spekter. Vzhled a originály zůstanou; lze vrátit přes Zpět.')
+                step.layout().insertWidget(step.layout().count()-1,restore)
+            self.data_steps.append(step)
+            self.workflow_pages.addWidget(scroll(step))
         self.peaks_panel = PeaksPanel(self._state)
-        for title, widget in [
-            ("Baseline", BaselinePanel(self._state)),
-            ("Šum", SmoothingPanel(self._state)),
-            ("Spikes", CosmicPanel(self._state)),
-            ("Píky", self.peaks_panel),
-            ("Další", ProcessingPanel(self._state)),
-        ]:
-            self.tool_tabs.addTab(scroll(widget), title)
-        processing_layout.addWidget(self.tool_tabs)
-        tabs.addTab(processing, "Úpravy")
-        self.ai_panel = AIPanel(self._state)
-        tabs.addTab(scroll(self.ai_panel), "AI")
-        tabs.addTab(scroll(GraphicsPanel(self._state)), "Vzhled")
-        self.export_panel = ExportPanel(self._state, get_plot_widget=lambda: self._plot)
-        tabs.addTab(scroll(self.export_panel), "Export")
-        tabs.addTab(scroll(PresetsPanel(self._state)), "Presety")
-        layout.addWidget(tabs)
+        self.peaks_panel.get_ids = self._target_ids
+        self.workflow_pages.addWidget(scroll(self.peaks_panel))
+        self.appearance_steps = {}
+        for kind in ('lines','axes','layout'):
+            step = AppearanceStep(self._state,kind,self._target_ids)
+            self.appearance_steps[kind] = step
+            if kind == 'layout':
+                step.layout().insertWidget(step.layout().count()-1,button("Automatický rozestup série",self._auto_offset))
+                step.layout().insertWidget(step.layout().count()-1,button("Reset pozic popisků",self._plot.reset_label_positions))
+            self.workflow_pages.addWidget(scroll(step))
+        finish = QWidget()
+        final = QVBoxLayout(finish)
+        final.setContentsMargins(0,0,0,0)
+        self.export_panel = ExportPanel(self._state,get_plot_widget=lambda:self._plot)
+        dims = QFormLayout()
+        for key,title in [('export_width','Šířka (px)'),('export_height','Výška (px)')]:
+            field = NumberField(100,20000,getattr(self._state.graphics,key),integer=True)
+            dims.addRow(title,field)
+            field.valueChanged.connect(lambda value,k=key:self._state.set_graphics(**{k:value}))
+            self._state.graphics_changed.connect(lambda w=field,k=key:w.setValue(getattr(self._state.graphics,k)) if w.value()!=getattr(self._state.graphics,k) else None)
+        final.addLayout(dims)
+        final.addWidget(self.export_panel)
+        final.addWidget(label("Uložit a znovu použít postup", "section"))
+        self.presets_panel = PresetsPanel(self._state)
+        final.addWidget(self.presets_panel)
+        final.addWidget(button("Uložit celý projekt",self._save_project))
+        final.addWidget(note("Preset přenese recept a vzhled. Projekt navíc uchová všechna spektra, individuální názvy, anotace a jejich pozice."))
+        self.workflow_pages.addWidget(scroll(finish))
+        layout.addWidget(self.workflow_pages,1)
+        row = QHBoxLayout()
+        self.previous_step = button("← Zpět",lambda:self._go_step(self.workflow_pages.currentIndex()-1))
+        self.next_step = button("Další →",lambda:self._go_step(self.workflow_pages.currentIndex()+1))
+        row.addWidget(self.previous_step)
+        row.addWidget(self.next_step)
+        layout.addLayout(row)
         self._plot.set_peaks_panel(self.peaks_panel)
         return panel
+
+    def _go_step(self, index):
+        if not hasattr(self,'workflow_pages') or not 0 <= index < len(self.STEPS):
+            return
+        if hasattr(self,"ai_dock") and self.ai_dock.isVisible():
+            self.ai_dock.hide()
+        self.workflow_pages.setCurrentIndex(index)
+        self.step_list.blockSignals(True)
+        self.step_list.setCurrentRow(index)
+        self.step_list.blockSignals(False)
+        number,title,subtitle = self.STEPS[index]
+        self.step_heading.setText(f"{number}  {title}")
+        self.step_description.setText(subtitle)
+        self.previous_step.setEnabled(index > 0)
+        self.next_step.setEnabled(index < len(self.STEPS)-1)
+        if index == 6:
+            self._state.set_peaks(manual_pick_enabled=True)
+
+    def _show_selection(self, show_all):
+        selected = {item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()}
+        if not show_all and not selected:
+            self.statusBar().showMessage("Nejprve vyber spektra pro porovnání.")
+            return
+        ids = [s.id for s in self._state.spectra]
+        if not ids:
+            return
+        styles = {s.id:{**s.meta.get('trace_style',{}),'visible':show_all or s.id in selected} for s in self._state.spectra}
+        self._state.preview_workflow(presentation={'plot':{'show_all_spectra':True}},
+            collection={'styles':styles},spectrum_ids=ids,label='Výběr spekter pro porovnání')
+        self._state.apply_preview()
+
+    def _reset_selected_data(self):
+        try:
+            self._state.reset_processing(self._target_ids())
+        except ValueError as exc:
+            self.statusBar().showMessage(str(exc))
+
+    def _target_ids(self):
+        if not hasattr(self,'scope') or self.scope.currentIndex() == 0:
+            return [self._state.active_spectrum_id] if self._state.active_spectrum_id else []
+        if self.scope.currentIndex() == 2:
+            return [s.id for s in self._state.spectra]
+        selected = {item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()}
+        return [s.id for s in self._state.spectra if s.id in selected]
+
+    def _scope_changed(self):
+        self._state.clear_preview()
+        if hasattr(self,'list'):
+            self._target_caption()
+
+    def _target_caption(self):
+        ids = self._target_ids()
+        names = [s.name for s in self._state.spectra if s.id in ids]
+        short_names = [name if len(name)<=38 else name[:35]+"…" for name in names]
+        self.target_label.setText(f"Data a individuální čáry: {len(ids)} · " + (", ".join(short_names[:3]) + ("…" if len(names)>3 else "") if names else "vyber spektra v kroku 01"))
+        self.target_label.setToolTip("\n".join(names))
 
     def _connect(self):
         for signal in [
@@ -534,17 +705,33 @@ class MainWindow(QMainWindow):
                 self._axis_context = context
                 if not self._suspend_auto_axes and context is not None:
                     self._sync_axes_to_measurement()
+            selected_ids = {item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()}
             self.list.blockSignals(True)
             self.list.clear()
             for spec in state.spectra:
                 item = QListWidgetItem(
-                    f"{spec.name}\n{TECHNIQUES.get(spec.meta.get('technique'), 'Vlastní')} · {len(spec.x):,} bodů"
+                    f"{spec.name}\n{TECHNIQUES.get(spec.meta.get('technique'), 'Vlastní')} · {len(spec.x):,} bodů" + (" · skryté" if not spec.meta.get('trace_style',{}).get('visible',True) else "")
                 )
                 item.setData(Qt.ItemDataRole.UserRole, spec.id)
                 self.list.addItem(item)
                 if spec.id == state.active_spectrum_id:
                     self.list.setCurrentItem(item)
+                if spec.id in selected_ids:
+                    item.setSelected(True)
+            if selected_ids:
+                for i in range(self.list.count()):
+                    self.list.item(i).setSelected(self.list.item(i).data(Qt.ItemDataRole.UserRole) in selected_ids)
+            query = self.spectrum_search.text().casefold()
+            for i in range(self.list.count()):
+                self.list.item(i).setHidden(query not in self.list.item(i).text().casefold())
             self.list.blockSignals(False)
+            self.spectrum_picker.blockSignals(True)
+            self.spectrum_picker.clear()
+            for spectrum in state.spectra:
+                self.spectrum_picker.addItem(spectrum.name,spectrum.id)
+            self.spectrum_picker.setCurrentIndex(self.spectrum_picker.findData(state.active_spectrum_id))
+            self.spectrum_picker.blockSignals(False)
+            self._target_caption()
             self.count.setText(str(len(state.spectra)))
             self.undo_button.setEnabled(state.can_undo)
             self.redo_button.setEnabled(state.can_redo)
@@ -560,6 +747,7 @@ class MainWindow(QMainWindow):
             self.offset.blockSignals(True)
             self.offset.setValue(state.plot.stack_offset)
             self.offset.blockSignals(False)
+            spec = state.active_spectrum
             for widget in [self.technique, self.y_kind, self.x_unit]:
                 widget.setEnabled(spec is not None)
                 widget.blockSignals(True)
@@ -576,6 +764,7 @@ class MainWindow(QMainWindow):
                     spec.meta.get("x_unit", spec.meta.get("x_units") or "a.u.")
                 )
                 self.plot_title.setText(spec.name)
+                self.plot_title.setToolTip(spec.name)
                 self.metadata.setPlainText(
                     json.dumps(spec.meta, indent=2, ensure_ascii=False, default=str)
                 )
@@ -733,8 +922,9 @@ class MainWindow(QMainWindow):
             self._state.move_spectrum(self._state.active_spectrum_id, direction)
 
     def _remove(self):
-        if self._state.active_spectrum_id:
-            self._state.remove_spectrum(self._state.active_spectrum_id)
+        ids = [item.data(Qt.ItemDataRole.UserRole) for item in self.list.selectedItems()]
+        if ids:
+            self._state.remove_spectra(ids)
 
     def _clear(self):
         if (

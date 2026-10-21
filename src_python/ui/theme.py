@@ -33,6 +33,15 @@ QWidget { color: #24343c; font-family: 'Avenir Next', 'Segoe UI', sans-serif; fo
 QMainWindow, QWidget#workspace { background: #f5f7f7; }
 QFrame#header { background: white; border-bottom: 1px solid #e1e8e8; }
 QFrame#library, QFrame#inspector { background: #fafbfb; }
+QFrame#workflowNav { background: #eef3f2; border-right: 1px solid #e1e8e8; }
+QFrame#workflowNav QListWidget::item { padding: 13px 8px; margin: 2px 0; }
+QFrame#workflowNav QListWidget::item:selected { background: #d5e9e5; color: #0c5f59; font-weight: 600; }
+QLabel#eyebrow { color: #607b79; font-size: 10px; font-weight: 600; letter-spacing: 1px; }
+QPushButton#reset { color: #9a4c43; background: #fff8f6; border-color: #ebd9d5; }
+QPushButton#reset:hover { background: #f9e9e4; }
+QDockWidget { background: #fafbfb; }
+QDockWidget::title { padding: 10px; background: #e8f2ef; }
+
 QWidget#panelContents { background: #fafbfb; }
 QLabel#brand { font-size: 23px; font-weight: 700; color: #146b68; }
 QLabel#section { font-size: 15px; font-weight: 600; }

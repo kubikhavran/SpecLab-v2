@@ -9,6 +9,7 @@ import json
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
+    QCheckBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -65,9 +66,12 @@ class PresetsPanel(QWidget):
         self._list.setMinimumHeight(60)
         layout.addWidget(self._list)
 
+        self.replay_recipe = QCheckBox("Přehrát zpracování z původních dat")
+        self.replay_recipe.setChecked(True)
+        layout.addWidget(self.replay_recipe)
         row2 = QHBoxLayout()
-        self._btn_apply = QPushButton("Použít")
-        self._btn_apply.setToolTip("Použít nastavení a znovu provést uložený postup pro aktivní spektrum z původních dat; změnu lze vrátit.")
+        self._btn_apply = QPushButton("Použít na projekt")
+        self._btn_apply.setToolTip("Použít vzhled celého projektu; volitelně přehrát uložené recepty ze všech originálů. Celou změnu lze vrátit.")
         self._btn_apply.setEnabled(False)
         row2.addWidget(self._btn_apply)
 
@@ -90,6 +94,10 @@ class PresetsPanel(QWidget):
         row3.addWidget(self._btn_import)
         layout.addLayout(row3)
 
+        info = QLabel("Stejný počet spekter: recept a styl každé pozice série. Jiný počet: recept aktivního spektra na celou dávku. Ruční anotace a názvy uchová projekt.")
+        info.setWordWrap(True)
+        info.setObjectName('muted')
+        layout.addWidget(info)
         self._info = QLabel("")
         self._info.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(self._info)
@@ -160,11 +168,13 @@ class PresetsPanel(QWidget):
         if preset is None:
             return
         try:
-            apply_preset_payload(self._state, preset.payload)
+            apply_preset_payload(self._state, preset.payload,apply_recipe=self.replay_recipe.isChecked())
         except (ValueError, ArithmeticError) as error:
             self._info.setText(f"Předvolbu nelze použít: {error}")
             return
-        self._info.setText(f"Použito: {preset.name}")
+        slots = preset.payload.get('series_template',[])
+        scope = ('postup podle pozic série' if slots and len(slots)==len(self._state.spectra) else 'recept aktivního spektra na celou dávku') if self.replay_recipe.isChecked() else 'pouze vzhled a nastavení'
+        self._info.setText(f"Použito: {preset.name} · {scope}")
 
     def _on_rename(self) -> None:
         preset = self._selected_preset()

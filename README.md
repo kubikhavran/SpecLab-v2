@@ -22,6 +22,20 @@ python3 src_python/main.py soubor1.txt soubor2.wdf
 
 `--demo` načte syntetická demonstrační spektra.
 
+## Pracovní postup
+
+Vlevo je 11 kroků: **Spektra → Rozsah a převody → Spiky → Baseline → Šum a derivace → Měřítko dat → Píky → Čáry a barvy → Osy a písmo → Rozložení a popisky → Export a preset**. Graf zůstává uprostřed a pravý panel ukazuje právě vybraný krok. Kroky lze přeskočit a kdykoli se k nim vrátit.
+
+Nahoře vyberte aktivní spektrum a rozsah aplikace: aktivní, vybraná nebo všechna. Více spekter vyberete v kroku 01 pomocí Ctrl/⌘ nebo Shift; pořadí změníte tažením nebo šipkami. Přejmenování otevře dvojklik; dostupné jsou také hromadné názvy a sekvence. **Zobrazit výběr** porovná vybrané křivky bez odebrání ostatních; **Zobrazit vše** je vrátí do grafu. Individuální viditelnost lze nastavit i v kroku Čáry a barvy. Jednotky a technika popisují aktivní spektrum, samy nepřevádějí jeho hodnoty.
+
+Filtry mají posuvníky i přesná číselná pole a tlačítka **Náhled / Použít / Reset**. Reset odebere daný nástroj z receptu a přepočítá zbývající operace z originálu. V kroku 06 je také obnova celých původních dat. Nastavení grafiky se potvrzuje vlastním tlačítkem Použít; reset obnoví jen příslušnou skupinu vzhledu. Globální vzhled platí pro celý graf, individuální barva, šířka a styl čáry respektují výběr spekter.
+
+**Common scale** zachovává společné Y. **Full scale** zobrazuje každou křivku v rozsahu 0–1 pro porovnání tvarů. Oba režimy i rozestup série mění pouze obrázek; hodnoty CSV/TSV se mění jen nástroji zpracování dat. **Tabulka · historie · integrace** pod horní lištou zobrazí podrobnosti bez trvalého zmenšení grafu.
+
+V kroku 11 uložíte preset i celý projekt. Preset zachytí globální nastavení a recepty / individuální styly podle pozic série: při stejném počtu spekter je přehraje podle pořadí. Při jiném počtu použije recept tehdy aktivního spektra na celou dávku. Přehrání dat lze vypnout. **Projekt** navíc uchová skutečná data, názvy, ruční píky a pozice jejich popisků. Použití presetu je vratná transakce.
+
+Podrobná mapa funkcí: [docs/workflow.md](docs/workflow.md).
+
 ## Podporované formáty
 
 - **TXT, CSV, TSV, DAT, ASC, XY, DPT:** vícesloupcový import; první sloupec je X a každý další sloupec Y samostatného spektra. Podporuje citované CSV, desetinnou čárku u oddělovače středník/tabulátor/mezera a kódování UTF-8/UTF-16 s fallbackem CP1250. Chybné číselné řádky se odmítají (jen poškozený poslední řádek, typický pro přerušený export, se vynechá s upozorněním); nejsou podporovány prokládané dvojice X/Y ani automatické odstraňování chybějících hodnot. Dlouhý formát exportu WiRE (`#Time/#X #Y #Wave #Intensity`) se rozdělí na jednotlivá spektra série podle času či polohy.
@@ -45,6 +59,7 @@ Operace v místním zpracovatelském jádře:
 - **Convert Y:** převod mezi transmitancí a absorbancí.
 - **Crop:** oříznutí spektra na zvolený rozsah X.
 - **Resample:** převzorkování na rovnoměrný krok X.
+- **Scale:** explicitní násobení intenzity; výstup je relativní.
 - **Shift:** posun os X a/nebo Y.
 - **Interpolate:** interpolace hodnot Y ve zvoleném rozsahu.
 
@@ -54,7 +69,7 @@ Každá úprava se nejprve zobrazí v náhledu, zaznamená do **Historie úprav*
 
 Popisky píků se rozmisťují automaticky: zůstávají u svého pásu (u transmitance pod ním) a zachovávají pořadí pásů. Popisky se nikdy nepřekrývají a vodicí čáry se nekříží, nevedou přes jiný popisek ani přes křivku: posunuté popisky jednoho shluku se lomí ve společném pásu nad ním. Pokud by se popisek musel posunout dál než o 2,5 své šířky, oblast je příliš hustá a nejslabší pás v ní zůstane bez popisku (počet skrytých popisků ukazuje graf; po přiblížení se objeví). Ručně přetažený popisek si drží polohu vůči píku. Tlačítko **Auto** u rozestupu křivek rozestoupí překryv spekter tak, aby se nepřekrývala.
 
-Automatická detekce podporuje maxima, minima nebo obojí, minimální prominenci, minimální vzdálenost v jednotkách X a omezení na oblast X. Ruční výběr zapnete volbou **Ruční výběr**: Ctrl/⌘+kliknutí přidá pík, Shift+kliknutí poblíž píku jej odstraní. Popisky píků lze přetahovat. Tabulku píků lze tlačítkem **Kopírovat TSV** zkopírovat do schránky.
+Automatická detekce podporuje maxima, minima nebo obojí, minimální prominenci, minimální vzdálenost v jednotkách X a omezení na oblast X. Ruční výběr zapnete volbou **Ruční výběr**: Ctrl/⌘+kliknutí přidá pík, Shift+kliknutí poblíž píku jej odstraní. Popisky píků lze přetahovat i ručně zadat pozici X a text. Vodicí čára se při tažení pohybuje s popiskem. Pravý klik na popisek jej odebere. Ruční pozice i nastavení čar, barev a písma přebírá také publikační export. Tabulku píků lze tlačítkem **Kopírovat TSV** zkopírovat do schránky.
 
 ## Projekty
 
@@ -62,11 +77,11 @@ Soubor `*.speclab.json` ukládá původní i aktuální data, recepturu zpracov�
 
 ## AI (e-INFRA CZ / CESNET)
 
-API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej na kartě **AI**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte před spuštěním aplikace v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
+API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej přes **AI asistent → Nastavení připojení e-INFRA**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte před spuštěním aplikace v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
 
-Na kartě AI zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí JSON plán povolených operací a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů měřené vůči jejich okolí, takže široké pozadí pásy nezakryje; typickou šířku pásu a odhad šumu), aby volila přiměřené vyhlazení, baseline a práh detekce. Velikosti písma se ověřují (čitelné minimum), detekce píků uvedená omylem mezi operacemi se přesune do vzhledu.
+V panelu AI asistenta zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí plán povolených operací (JSON lze rozbalit v pokročilém nastavení) a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů měřené vůči jejich okolí, takže široké pozadí pásy nezakryje; typickou šířku pásu a odhad šumu), aby volila přiměřené vyhlazení, baseline a práh detekce. Velikosti písma se ověřují (čitelné minimum), detekce píků uvedená omylem mezi operacemi se přesune do vzhledu.
 
-Odesílá se text zadání a kontext spektra: technika, typ Y, jednotka X, rozsahy X/Y a počet bodů. Je-li zaškrtnuta volba redukovaného náhledu, přidá se min/max obálka o nejvýše 258 bodech. Náhled neobsahuje názvy ani cesty souborů.
+Odesílá se text zadání a kontext spektra: technika, typ Y, jednotka X, rozsahy X/Y a počet bodů. Je-li zaškrtnuta volba redukovaného náhledu, přidá se min/max obálka o nejvýše 258 bodech. Cesty souborů se neodesílají. Názvy se posílají jen po zaškrtnutí samostatné volby; AI pak může navrhnout přejmenování a změnu pořadí. Kontext obsahuje všechny vybrané křivky, nejvýše 30 na jeden návrh. Návrh může obsahovat i individuální barvy, šířky a styly čar. Zpracování dat, grafiku s detekcí a změny seznamu lze před použitím nezávisle vypnout. **Prohlédnout celý návrh grafu** otevře oddělený náhled. Potvrzení všech částí vytvoří jediný krok Zpět; změna vstupu nebo nastavení starý náhled zneplatní.
 
 Na macOS je nejpohodlnější uložit klíč jednou do Klíčenky (příkaz se na klíč zeptá, nezobrazí ho). Aplikace i testovací skript si ho pak načtou samy, pole „Klíč“ může zůstat prázdné:
 

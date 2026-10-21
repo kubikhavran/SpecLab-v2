@@ -17,12 +17,24 @@ from app.models import SPECTRAL_MODES
 from core.processing import validate_operations
 from core.project_io import SETTINGS, settings_from_dict
 
-PRESETS_FILENAME = 'speclab_presets.json'
+PRESETS_FILENAME = "speclab_presets.json"
 _SECTIONS = set(SETTINGS)
-_PAYLOAD_KEYS = _SECTIONS | {'spectral_mode', 'pipeline', 'migration'}
+_PAYLOAD_KEYS = _SECTIONS | {
+    "spectral_mode",
+    "pipeline",
+    "migration",
+    "series_template",
+}
 _PIPELINE_KEYS = {
-    'operations', 'recipe_scope', 'source_spectrum_name', 'from_original',
-    'auto_peaks_applied', 'cosmic_applied', 'baseline_applied', 'smoothing_applied', 'raw_only',
+    "operations",
+    "recipe_scope",
+    "source_spectrum_name",
+    "from_original",
+    "auto_peaks_applied",
+    "cosmic_applied",
+    "baseline_applied",
+    "smoothing_applied",
+    "raw_only",
 }
 
 
@@ -199,37 +211,69 @@ def _migrate_v1(payload):
 def normalize_preset_payload(payload, legacy=False):
     """Fully validate before importing or mutating a workspace."""
     if not isinstance(payload, dict):
-        raise ValueError('Obsah presetu musí být objekt.')
+        raise ValueError("Obsah presetu musí být objekt.")
     warnings = []
-    if legacy or any(key in payload for key in ('themeMode', 'dataLabeling', 'peaksSettings')):
+    if legacy or any(
+        key in payload for key in ("themeMode", "dataLabeling", "peaksSettings")
+    ):
         payload, warnings = _migrate_v1(payload)
     if set(payload) - _PAYLOAD_KEYS:
-        raise ValueError(f'Neznámá pole presetu: {", ".join(sorted(set(payload) - _PAYLOAD_KEYS))}.')
+        raise ValueError(
+            f"Neznámá pole presetu: {', '.join(sorted(set(payload) - _PAYLOAD_KEYS))}."
+        )
     result = {}
     for key in _SECTIONS:
         if key in payload:
             result[key] = asdict(settings_from_dict(SETTINGS[key][1], payload[key]))
-    if 'spectral_mode' in payload:
-        mode = payload['spectral_mode']
+    if "series_template" in payload:
+        from core.collection import validate_style
+
+        slots = payload["series_template"]
+        if not isinstance(slots, list) or len(slots) > 1000:
+            raise ValueError("Šablona série musí obsahovat nejvýše 1 000 položek.")
+        result["series_template"] = []
+        for slot in slots:
+            if (
+                not isinstance(slot, dict)
+                or set(slot) != {"operations", "style", "detect_peaks"}
+                or not isinstance(slot["detect_peaks"], bool)
+            ):
+                raise ValueError("Neplatná položka šablony série.")
+            operations = slot["operations"]
+            if not isinstance(operations, list):
+                raise ValueError("Operace šablony musí být seznam.")
+            result["series_template"].append(
+                {
+                    "operations": validate_operations(operations) if operations else [],
+                    "style": validate_style(slot["style"]),
+                    "detect_peaks": slot["detect_peaks"],
+                }
+            )
+    if "spectral_mode" in payload:
+        mode = payload["spectral_mode"]
         if not isinstance(mode, str) or mode not in SPECTRAL_MODES:
-            raise ValueError('Neznámý spektrální režim presetu.')
-        result['spectral_mode'] = mode
-    if 'pipeline' in payload:
-        result['pipeline'] = _validate_pipeline(payload['pipeline'])
-    if 'migration' in payload:
-        migration = payload['migration']
+            raise ValueError("Neznámý spektrální režim presetu.")
+        result["spectral_mode"] = mode
+    if "pipeline" in payload:
+        result["pipeline"] = _validate_pipeline(payload["pipeline"])
+    if "migration" in payload:
+        migration = payload["migration"]
         if not isinstance(migration, dict):
-            raise ValueError('Poznámky k migraci presetu musí být objekt.')
+            raise ValueError("Poznámky k migraci presetu musí být objekt.")
         # Only known inert migration data can pass through export/import.
-        if set(migration) - {'source_format', 'theme_mode', 'legacy_data_labeling'}:
-            raise ValueError('Neznámé informace o migraci presetu.')
-        if 'legacy_data_labeling' in migration:
-            _validate_labeling(migration['legacy_data_labeling'])
-        if 'source_format' in migration:
-            _string(migration['source_format'], 'Zdroj migrace', 100)
-        if 'theme_mode' in migration and migration['theme_mode'] not in {'system', 'light', 'dark'}:
-            raise ValueError('Neplatné téma při migraci.')
-        result['migration'] = copy.deepcopy(migration)
+        if set(migration) - {"source_format", "theme_mode", "legacy_data_labeling"}:
+            raise ValueError("Neznámé informace o migraci presetu.")
+        if "legacy_data_labeling" in migration:
+            _validate_labeling(migration["legacy_data_labeling"])
+        if "source_format" in migration:
+            _string(migration["source_format"], "Zdroj migrace", 100)
+        if "theme_mode" in migration and migration["theme_mode"] not in {
+            "system",
+            "light",
+            "dark",
+        }:
+            raise ValueError("Neplatné téma při migraci.")
+        result["migration"] = copy.deepcopy(migration)
     return result, warnings
 
 
@@ -278,13 +322,27 @@ class Preset:
 def capture_preset_payload(state):
     active = state.active_spectrum
     return {
-        'spectral_mode': state.spectral_mode,
-        **{key: asdict(getattr(state, attribute)) for key, (attribute, _) in SETTINGS.items()},
-        'pipeline': {
-            'operations': state.processing_recipe(active.id) if active else [],
-            'recipe_scope': 'active_spectrum', 'source_spectrum_name': active.name if active else None,
-            'auto_peaks_applied': bool(state.peaks_auto.get(active.id)) if active else False,
-            'from_original': True,
+        "spectral_mode": state.spectral_mode,
+        "series_template": [
+            {
+                "operations": state.processing_recipe(s.id),
+                "style": copy.deepcopy(s.meta.get("trace_style", {})),
+                "detect_peaks": bool(state.peaks_auto.get(s.id)),
+            }
+            for s in state.spectra
+        ],
+        **{
+            key: asdict(getattr(state, attribute))
+            for key, (attribute, _) in SETTINGS.items()
+        },
+        "pipeline": {
+            "operations": state.processing_recipe(active.id) if active else [],
+            "recipe_scope": "active_spectrum",
+            "source_spectrum_name": active.name if active else None,
+            "auto_peaks_applied": bool(state.peaks_auto.get(active.id))
+            if active
+            else False,
+            "from_original": True,
         },
     }
 
@@ -293,29 +351,92 @@ def apply_preset_payload(state, payload, apply_recipe=True):
     """Settings-only never changes data; recipe replay is explicit and atomic."""
     payload, _ = normalize_preset_payload(payload)
     settings = {key: payload[key] for key in _SECTIONS if key in payload}
-    if 'spectral_mode' in payload:
-        settings['spectral_mode'] = payload['spectral_mode']
+    if "spectral_mode" in payload:
+        settings["spectral_mode"] = payload["spectral_mode"]
     recipe, detect_auto = None, False
     if apply_recipe:
-        pipeline = payload.get('pipeline', {})
-        if 'operations' in pipeline:
-            recipe = pipeline['operations']
+        pipeline = payload.get("pipeline", {})
+        if "operations" in pipeline:
+            recipe = pipeline["operations"]
         elif pipeline:
             recipe = []
-            c = settings_from_dict(SETTINGS['cosmic'][1], settings.get('cosmic', {}))
-            b = settings_from_dict(SETTINGS['baseline'][1], settings.get('baseline', {}))
-            s = settings_from_dict(SETTINGS['smoothing'][1], settings.get('smoothing', {}))
-            if pipeline.get('cosmic_applied'):
-                recipe.append({'op': 'despike', 'params': {'window': c.window, 'threshold': c.threshold,
-                               'max_width': c.max_width, 'positive_only': c.positive_only, 'iterations': c.iterations}})
-            if pipeline.get('baseline_applied', b.enabled):
-                recipe.append({'op': 'baseline', 'params': {'lam': b.lambda_, 'p': b.p, 'iterations': b.iterations}})
-            if pipeline.get('smoothing_applied'):
-                recipe.append({'op': 'smooth', 'params': {'window': s.window, 'poly_order': s.poly_order}})
-        elif settings.get('baseline', {}).get('enabled'):
-            b = settings['baseline']
-            recipe = [{'op': 'baseline', 'params': {'lam': b['lambda_'], 'p': b['p'], 'iterations': b['iterations']}}]
-        detect_auto = bool(pipeline.get('auto_peaks_applied', False))
+            c = settings_from_dict(SETTINGS["cosmic"][1], settings.get("cosmic", {}))
+            b = settings_from_dict(
+                SETTINGS["baseline"][1], settings.get("baseline", {})
+            )
+            s = settings_from_dict(
+                SETTINGS["smoothing"][1], settings.get("smoothing", {})
+            )
+            if pipeline.get("cosmic_applied"):
+                recipe.append(
+                    {
+                        "op": "despike",
+                        "params": {
+                            "window": c.window,
+                            "threshold": c.threshold,
+                            "max_width": c.max_width,
+                            "positive_only": c.positive_only,
+                            "iterations": c.iterations,
+                        },
+                    }
+                )
+            if pipeline.get("baseline_applied", b.enabled):
+                recipe.append(
+                    {
+                        "op": "baseline",
+                        "params": {
+                            "lam": b.lambda_,
+                            "p": b.p,
+                            "iterations": b.iterations,
+                        },
+                    }
+                )
+            if pipeline.get("smoothing_applied"):
+                recipe.append(
+                    {
+                        "op": "smooth",
+                        "params": {"window": s.window, "poly_order": s.poly_order},
+                    }
+                )
+        elif settings.get("baseline", {}).get("enabled"):
+            b = settings["baseline"]
+            recipe = [
+                {
+                    "op": "baseline",
+                    "params": {
+                        "lam": b["lambda_"],
+                        "p": b["p"],
+                        "iterations": b["iterations"],
+                    },
+                }
+            ]
+        detect_auto = bool(pipeline.get("auto_peaks_applied", False))
+    slots = payload.get("series_template", [])
+    if slots and len(slots) == len(state.spectra):
+        from app.state import AppState
+
+        staged = AppState()
+        staged._restore(state._snapshot())
+        staged.apply_preset(settings, recipe=None)
+        for spec, slot in zip(staged.spectra, slots):
+            if apply_recipe:
+                staged.reset_processing([spec.id])
+                if slot["operations"]:
+                    staged.apply_operations(
+                        slot["operations"], [spec.id], source="preset"
+                    )
+                if slot["detect_peaks"]:
+                    staged.detect_spectrum_peaks([spec.id])
+            spec.meta["trace_style"] = copy.deepcopy(slot["style"])
+        before = state._snapshot()
+        state._restore(staged._snapshot())
+        return state._record_transaction(
+            before,
+            "Preset série",
+            "preset",
+            recipe or [],
+            [s.id for s in state.spectra],
+        )
     return state.apply_preset(settings, recipe=recipe, detect_auto=detect_auto)
 
 

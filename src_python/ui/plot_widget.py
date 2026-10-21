@@ -1,6 +1,8 @@
 """Interactive spectrum canvas with accurate styles, originals and local previews."""
 
 from __future__ import annotations
+
+from core.view import view_y, trace_style
 import html
 import math
 import re
@@ -17,7 +19,10 @@ from core.sampling import with_gap_breaks
 
 # Automatic Y labels (current and earlier versions) may follow the active ordinate.
 _AUTOMATIC_Y_LABELS = set(AXIS_Y_LABELS.values()) | {
-    "Y", "Intenzita (a.u.)", "Transmitance (%)", "Transmitance (0–1)",
+    "Y",
+    "Intenzita (a.u.)",
+    "Transmitance (%)",
+    "Transmitance (0–1)",
 }
 
 
@@ -33,8 +38,8 @@ def axis_html(text):
     )
 
 
-LABEL_GAP_PX = 6        # free space between the curve and a label
-LEADER_KINK_PX = 12     # vertical part of an elbow leader line
+LABEL_GAP_PX = 6  # free space between the curve and a label
+LEADER_KINK_PX = 12  # vertical part of an elbow leader line
 
 
 def label_anchor(angle: float, upward: bool) -> tuple[float, float]:
@@ -61,6 +66,10 @@ class _PeakLabel(pg.TextItem):
         self._start = None
         self.setPos(*position)
         self.setZValue(20)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip(
+            "Tažením posuň popisek · Shift + klik nebo pravý klik jej odebere"
+        )
 
     def mouseDragEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -79,7 +88,10 @@ class _PeakLabel(pg.TextItem):
             self.callback(self.pos().x() - self.origin[0], self.pos().y() - self.origin[1])
 
     def mouseClickEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.RightButton:
+            event.accept()
+            self.delete_callback()
+        elif event.button() == Qt.MouseButton.LeftButton:
             event.accept()
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.delete_callback()
@@ -181,11 +193,21 @@ class SpectrumPlotWidget(QWidget):
     def auto_stack_offset(self) -> float:
         """Smallest common offset that keeps neighbouring overlay curves apart."""
         state = self._state
-        order = list(reversed(state.spectra)) if state.plot.reverse_overlay_order else list(state.spectra)
-        curves = [np.asarray(state.displayed_y(spec.id), dtype=float) for spec in order]
+        order = (
+            list(reversed(state.spectra))
+            if state.plot.reverse_overlay_order
+            else list(state.spectra)
+        )
+        order = [s for s in order if s.meta.get("trace_style",{}).get("visible",True)]
+        curves = [
+            view_y(state.displayed_y(spec.id), state.plot.scale_mode) for spec in order
+        ]
         if len(curves) < 2:
             return 0.0
-        gap = max(float(np.max(lower) - np.min(upper)) for lower, upper in zip(curves, curves[1:]))
+        gap = max(
+            float(np.max(lower) - np.min(upper))
+            for lower, upper in zip(curves, curves[1:])
+        )
         span = max(float(np.ptp(curve)) for curve in curves)
         return max(gap, 0.0) + 0.05 * span
 
@@ -222,6 +244,8 @@ class SpectrumPlotWidget(QWidget):
         graphics = state.graphics
         plot = state.plot
         self._style()
+        if self._plot_item.legend:
+            self._plot_item.legend.setVisible(not graphics.inline_spectrum_labels)
         if not state.spectra:
             self._plotted = []
             self._coord_label.setText("Importuj spektra nebo načti demonstrační data.")
@@ -231,6 +255,8 @@ class SpectrumPlotWidget(QWidget):
             if plot.reverse_overlay_order
             else list(state.spectra)
         )
+        if plot.show_all_spectra:
+            self._plotted = [s for s in self._plotted if s.meta.get("trace_style",{}).get("visible",True)]
         if not plot.show_all_spectra:
             self._plotted = [state.active_spectrum or state.spectra[0]]
         colors = get_palette_colors(graphics.palette, len(state.spectra))
@@ -243,15 +269,24 @@ class SpectrumPlotWidget(QWidget):
             )
             color = get_color_for_index(colors, color_index)
             x = np.asarray(spec.x)
-            y = np.asarray(state.displayed_y(spec.id))
+            y = view_y(state.displayed_y(spec.id), plot.scale_mode)
             offset = index * plot.stack_offset if plot.show_all_spectra else 0
-            width = max(1.0, graphics.trace_line_width / 2)
+            color, trace_width, line_style = trace_style(
+                spec, color, graphics.trace_line_width
+            )
+            width = max(0.1, trace_width / 2)
+            pen_style = {
+                "solid": Qt.PenStyle.SolidLine,
+                "dash": Qt.PenStyle.DashLine,
+                "dot": Qt.PenStyle.DotLine,
+                "dashdot": Qt.PenStyle.DashDotLine,
+            }[line_style]
             if self._show_original:
                 raw = state.original_data(spec.id)
                 if raw:
                     self._curve(
                         raw[0],
-                        np.asarray(raw[1]) + offset,
+                        view_y(raw[1], plot.scale_mode) + offset,
                         "#a2b7b5",
                         1.2,
                         Qt.PenStyle.DashLine,
@@ -263,11 +298,17 @@ class SpectrumPlotWidget(QWidget):
                 color,
                 width + (0.4 if spec.id == state.active_spectrum_id else 0),
                 name=spec.name,
+                style=pen_style,
             )
             self._trace_items.append(trace)
             if graphics.inline_spectrum_labels:
                 inline = pg.TextItem(spec.name, color=color, anchor=(1, 1))
-                inline.setFont(QFont(graphics.font_family, 9))
+                name_font = QFont(
+                    graphics.font_family, max(7, round(graphics.tick_font_size / 2.5))
+                )
+                name_font.setBold(graphics.spectrum_label_bold)
+                name_font.setItalic(graphics.spectrum_label_italic)
+                inline.setFont(name_font)
                 inline.setPos(float(x[-1]), float(y[-1] + offset))
                 self._add(inline)
             if (
@@ -279,7 +320,7 @@ class SpectrumPlotWidget(QWidget):
                 if len(baseline) == len(x):
                     self._curve(
                         x,
-                        np.asarray(baseline) + offset,
+                        view_y(baseline, plot.scale_mode) + offset,
                         "#9da9b4",
                         1,
                         Qt.PenStyle.DashLine,
@@ -289,7 +330,7 @@ class SpectrumPlotWidget(QWidget):
                 result = preview["results"][spec.id]
                 self._curve(
                     result["x"],
-                    np.asarray(result["y"]) + offset,
+                    view_y(result["y"], plot.scale_mode) + offset,
                     "#14877b",
                     2.3,
                     Qt.PenStyle.DotLine,
@@ -305,6 +346,8 @@ class SpectrumPlotWidget(QWidget):
         note = f"{len(self._plotted)} křivek · {sum(len(s.x) for s in self._plotted):,} bodů"
         if len(all_kind) > 1 or len(all_units) > 1:
             note += " · Porovnáváš různé jednotky / typy Y"
+        if plot.scale_mode == "full":
+            note += " · Full scale: každá křivka 0–1 (pouze zobrazení)"
         if preview:
             note += " · Tečkovaná křivka: dosud nepoužitý náhled"
         if self._show_original:
@@ -321,13 +364,26 @@ class SpectrumPlotWidget(QWidget):
         # Transmittance bands and minima point down; their labels go below.
         transmittance = str(spec.meta.get("y_kind", "")).startswith("transmittance")
         offsets = spec.meta.get(LABEL_OFFSETS, {})
+        label_y_scale = (
+            float(np.ptp(self._state.displayed_y(spec.id)))
+            if self._state.plot.scale_mode == "full"
+            else 1.0
+        )
+        label_y_scale = label_y_scale or 1.0
         anchor_up = label_anchor(settings.label_angle_deg, True)
         anchor_down = label_anchor(settings.label_angle_deg, False)
-        font = QFont(self._state.graphics.font_family, max(7, round(settings.label_font_size / 2)))
+        font = QFont(
+            self._state.graphics.font_family,
+            max(7, round(settings.label_font_size / 2)),
+        )
         font.setBold(settings.label_bold)
         font.setItalic(settings.label_italic)
-        text_color = color if settings.label_color_mode == "trace" else settings.label_color
-        leader_color = color if settings.leader_color_mode == "trace" else settings.leader_color
+        text_color = (
+            color if settings.label_color_mode == "trace" else settings.label_color
+        )
+        leader_color = (
+            color if settings.leader_color_mode == "trace" else settings.leader_color
+        )
         ascending = x[-1] > x[0]
         median = float(np.median(y))
         for peak in self._state.peaks_auto.get(
@@ -336,7 +392,9 @@ class SpectrumPlotWidget(QWidget):
             if not min(x[0], x[-1]) <= peak.x <= max(x[0], x[-1]):
                 continue
             px = float(peak.x)
-            py = float(np.interp(px, x, y) if ascending else np.interp(px, x[::-1], y[::-1]))
+            py = float(
+                np.interp(px, x, y) if ascending else np.interp(px, x[::-1], y[::-1])
+            )
             positions.append((px, py))
             if not settings.show_labels:
                 continue
@@ -352,7 +410,7 @@ class SpectrumPlotWidget(QWidget):
                 text_color,
                 (px, py),
                 lambda dx, dy, sid=spec.id, pid=peak.id: (
-                    self._state.set_peak_label_offset(sid, pid, dx, dy)
+                    self._state.set_peak_label_offset(sid, pid, dx, dy * label_y_scale)
                 ),
                 lambda sid=spec.id, pid=peak.id: self._state.remove_peak(sid, pid),
                 leader=leader,
@@ -361,12 +419,24 @@ class SpectrumPlotWidget(QWidget):
             )
             item.setFont(font)
             self._add(item, ignore_bounds=True)
-            self._labels.append({
-                "item": item, "leader": leader, "px": px, "py": py, "upward": upward,
-                "offset": offsets.get(peak.id), "x": x, "y": y,
-                # Stronger bands win the space next to the curve.
-                "importance": peak.prominence if peak.prominence is not None else abs(py - median),
-            })
+            self._labels.append(
+                {
+                    "item": item,
+                    "leader": leader,
+                    "px": px,
+                    "py": py,
+                    "upward": upward,
+                    "offset": [offsets[peak.id][0], offsets[peak.id][1] / label_y_scale]
+                    if peak.id in offsets
+                    else None,
+                    "x": x,
+                    "y": y,
+                    # Stronger bands win the space next to the curve.
+                    "importance": peak.prominence
+                    if peak.prominence is not None
+                    else abs(py - median),
+                }
+            )
         if settings.show_markers and positions:
             self._add(
                 pg.ScatterPlotItem(
@@ -509,6 +579,8 @@ class SpectrumPlotWidget(QWidget):
                 y_label = f"Derivative ({active.meta.get('y_unit', 'a.u.')})"
             elif active.meta.get("ordinate_processing", "").startswith("normalize"):
                 y_label = "Normalized intensity (a.u.)"
+        if p.scale_mode == "full":
+            y_label = "Relative intensity (full scale)"
         pi.setLabel("left", axis_html(y_label), **style)
         for name in ("bottom", "left", "top", "right"):
             axis = pi.getAxis(name)

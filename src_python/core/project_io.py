@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import asdict, fields
 from pathlib import Path
@@ -71,11 +72,15 @@ def settings_from_dict(cls, data: dict):
         if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) > 1e12:
             raise ValueError(f'Nastavení {key} překračuje povolený rozsah.')
         setattr(instance, key, value)
+    for key in ('axis_line_color','grid_color','label_color','leader_color'):
+        if hasattr(instance,key) and not re.fullmatch(r'#[0-9a-fA-F]{6}',getattr(instance,key)):
+            raise ValueError(f'Barva {key} musí mít tvar #RRGGBB.')
     enums = {
         'mode': {'active', 'all'}, 'source': {'displayed', 'processed'},
         'polarity': {'max', 'min', 'both'}, 'label_color_mode': {'trace', 'custom'},
         'leader_color_mode': {'trace', 'custom'}, 'frame_mode': {'open', 'box'},
         'plot_canvas': {'auto', 'white', 'dark'},
+        'scale_mode': {'common', 'full'},
     }
     for key, options in enums.items():
         if hasattr(instance, key) and getattr(instance, key) not in options:

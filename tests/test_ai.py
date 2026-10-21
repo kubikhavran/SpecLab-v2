@@ -218,7 +218,7 @@ def test_presentation_is_whitelisted_and_validated():
         {"graphics": {"font_family": "Comic Sans"}},    # unknown font
         {"peaks": {"max_peaks": True}},                 # bool as number
         {"peaks": {"polarity": "sideways"}},
-        {"plot": {"x_min": 0}},
+        {"plot": {"scale_mode": "invalid"}},
         {"detect_peaks": "yes"},
         {"peaks": {"relative_prominence": 2}},
         {"peaks": {"relative_prominence": True}},
