@@ -198,6 +198,35 @@ class SpectrumList(QListWidget):
         self.orderChanged.emit([self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())])
 
 
+class _FittedImage(QLabel):
+    """A rendered figure scaled to the available space (keeps its aspect ratio)."""
+
+    def __init__(self):
+        super().__init__()
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(200, 150)
+        self.setStyleSheet("background: white;")
+        self._pixmap = None
+
+    def set_png(self, data: bytes):
+        from PySide6.QtGui import QPixmap
+
+        pixmap = QPixmap()
+        self._pixmap = pixmap if data and pixmap.loadFromData(data) else None
+        self._fit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self):
+        if self._pixmap is None:
+            self.setText("Publikační náhled není k dispozici.")
+            return
+        self.setPixmap(self._pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                           Qt.TransformationMode.SmoothTransformation))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -257,11 +286,15 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
         self.ai_panel = AIPanel(self._state)
+        self.ai_panel.preview_ready.connect(self._show_ai_preview)
+        self.ai_panel.preview_closed.connect(self._close_ai_preview)
+        self._state.preview_changed.connect(
+            lambda: self._close_ai_preview() if self._state.preview_state() is None else None)
         self.ai_panel.get_ids = self._target_ids
-        self.ai_dock = QDockWidget("AI asistent · pracovní postup", self)
+        self.ai_dock = QDockWidget("AI asistent", self)
         self.ai_dock.setObjectName("aiAssistant")
-        self.ai_dock.setWidget(scroll(self.ai_panel))
-        self.ai_dock.setMinimumWidth(350)
+        self.ai_dock.setWidget(self.ai_panel)
+        self.ai_dock.setMinimumWidth(420)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.ai_dock)
         self.ai_dock.hide()
         self.ai_dock.visibilityChanged.connect(lambda visible:self.step_inspector.setVisible(not visible))
@@ -429,7 +462,35 @@ class MainWindow(QMainWindow):
         vertical = QSplitter(Qt.Orientation.Vertical)
         self._plot = SpectrumPlotWidget(self._state)
         self.raw.toggled.connect(self._plot.set_show_original)
-        vertical.addWidget(self._plot)
+        # The graph area switches between the workspace and a staged AI proposal;
+        # the banner stays visible in both views while a proposal is waiting.
+        graph_area = QWidget()
+        graph_layout = QVBoxLayout(graph_area)
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+        graph_layout.setSpacing(6)
+        self.ai_banner = QWidget()
+        banner = QHBoxLayout(self.ai_banner)
+        banner.setContentsMargins(0, 0, 0, 0)
+        self.ai_preview_note = label("Náhled návrhu AI · změny zatím nejsou použité", "muted")
+        banner.addWidget(self.ai_preview_note, 1)
+        self.ai_preview_apply = button("Použít změny", lambda: self.ai_panel._apply())
+        self.ai_preview_apply.setObjectName("primary")
+        banner.addWidget(self.ai_preview_apply)
+        banner.addWidget(button("Zahodit", lambda: self.ai_panel._discard()))
+        self.ai_preview_view = QComboBox()
+        self.ai_preview_view.addItems(["Publikační obrázek", "Interaktivní náhled", "Současný stav"])
+        self.ai_preview_view.setToolTip("Publikační obrázek ukazuje přesně to, co se exportuje.")
+        self.ai_preview_view.currentIndexChanged.connect(self._toggle_ai_preview)
+        banner.addWidget(self.ai_preview_view)
+        self.ai_banner.hide()
+        graph_layout.addWidget(self.ai_banner)
+        self.plot_stack = QStackedWidget()
+        self.plot_stack.addWidget(self._plot)
+        self.ai_preview_plot = None
+        self.ai_preview_image = _FittedImage()
+        self.plot_stack.addWidget(self.ai_preview_image)
+        graph_layout.addWidget(self.plot_stack, 1)
+        vertical.addWidget(graph_area)
         self.details = QTabWidget()
         self.peaks_table = QTableWidget(0, 6)
         self.peaks_table.setHorizontalHeaderLabels(
@@ -909,6 +970,43 @@ class MainWindow(QMainWindow):
             )
         QApplication.clipboard().setText(output.getvalue())
         self.statusBar().showMessage("Tabulka píků zkopírována jako TSV")
+
+    @with_busy_cursor
+    def _show_ai_preview(self):
+        from core.figure import figure_spec, render, to_png
+
+        staged = self._state.preview_state()
+        if staged is None:
+            return
+        self._close_ai_preview()
+        self.ai_preview_plot = SpectrumPlotWidget(staged)
+        self.plot_stack.addWidget(self.ai_preview_plot)
+        try:
+            graphics = staged.graphics
+            figure = render(figure_spec(staged), int(graphics.export_width), int(graphics.export_height), dpi=300)
+            self.ai_preview_image.set_png(to_png(figure))
+        except (ValueError, RuntimeError):
+            self.ai_preview_image.set_png(b"")
+        self.ai_preview_view.blockSignals(True)
+        self.ai_preview_view.setCurrentIndex(0)
+        self.ai_preview_view.blockSignals(False)
+        self._toggle_ai_preview(0)
+        self.ai_banner.show()
+
+    def _toggle_ai_preview(self, index):
+        if self.ai_preview_plot is None:
+            return
+        pages = [self.ai_preview_image, self.ai_preview_plot, self._plot]
+        self.plot_stack.setCurrentWidget(pages[index])
+
+    def _close_ai_preview(self):
+        if getattr(self, "ai_preview_plot", None) is not None:
+            self.plot_stack.removeWidget(self.ai_preview_plot)
+            self.ai_preview_plot.deleteLater()
+            self.ai_preview_plot = None
+        if hasattr(self, "plot_stack"):
+            self.plot_stack.setCurrentWidget(self._plot)
+            self.ai_banner.hide()
 
     def _auto_offset(self):
         self._state.set_plot(show_all_spectra=True, stack_offset=self._plot.auto_stack_offset())

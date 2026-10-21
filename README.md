@@ -75,13 +75,25 @@ Automatická detekce podporuje maxima, minima nebo obojí, minimální prominenc
 
 Soubor `*.speclab.json` ukládá původní i aktuální data, recepturu zpracování, píky, nastavení a původ změn. Historie Zpět/Znovu se neukládá. API klíče se do projektu nikdy neukládají.
 
-## AI (e-INFRA CZ / CESNET)
+## AI asistent (e-INFRA CZ / CESNET)
 
-API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej přes **AI asistent → Nastavení připojení e-INFRA**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte před spuštěním aplikace v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
+Tlačítko **AI asistent** otevře chat. Napište jakýkoli požadavek běžnou řečí, například:
 
-V panelu AI asistenta zvolte **Načíst dostupné modely**, vyberte model a popište požadovanou úpravu. AI vrátí plán povolených operací (JSON lze rozbalit v pokročilém nastavení) a volitelně návrh vzhledu (popisky os, písmo, paleta, styl a detekce píků s relativní prominencí); pro jeho kontrolu a zobrazení výsledku zvolte **Spočítat náhled**, pro potvrzené použití pak **Použít návrh**. Vzhled je omezený na bezpečný seznam nastavení a validuje se stejně jako presety. AI dostává objektivní popis spektra (polohy, šířky FWHM a relativní výšky nejvýraznějších pásů měřené vůči jejich okolí, takže široké pozadí pásy nezakryje; typickou šířku pásu a odhad šumu), aby volila přiměřené vyhlazení, baseline a práh detekce. Velikosti písma se ověřují (čitelné minimum), detekce píků uvedená omylem mezi operacemi se přesune do vzhledu.
+- *„Dej spektra do offsetu, aby byla porovnatelná, označ nejdůležitější píky u každého spektra a obarvi je podle vlnové délky laseru.“*
+- *„Z celé série vyber spektra po 200 mV, seřaď je od −1000 mV, obarvi gradientem od modré k červené, odečti pozadí a popiš 5 hlavních pásů.“*
+- *„Uprav moje spektra tak, aby vypadala jako na přiloženém obrázku.“*
 
-Odesílá se text zadání a kontext spektra: technika, typ Y, jednotka X, rozsahy X/Y a počet bodů. Je-li zaškrtnuta volba redukovaného náhledu, přidá se min/max obálka o nejvýše 258 bodech. Cesty souborů se neodesílají. Názvy se posílají jen po zaškrtnutí samostatné volby; AI pak může navrhnout přejmenování a změnu pořadí. Kontext obsahuje všechny vybrané křivky, nejvýše 30 na jeden návrh. Návrh může obsahovat i individuální barvy, šířky a styly čar. Zpracování dat, grafiku s detekcí a změny seznamu lze před použitím nezávisle vypnout. **Prohlédnout celý návrh grafu** otevře oddělený náhled. Potvrzení všech částí vytvoří jediný krok Zpět; změna vstupu nebo nastavení starý náhled zneplatní.
+AI pracuje jako agent: ovládá SpecLab stejnými nástroji jako vy (zpracování dat, barvy, šířky a viditelnost jednotlivých křivek, názvy, pořadí a offset, detekce píků zvlášť pro každé spektrum, vlastní popisky, osy, písmo, rámeček, rozměry exportu). Pracuje na kopii pracovního prostoru, takže se nic nezmění, dokud výsledek nepotvrdíte. Chybné nebo mimo rozsah zadané hodnoty dostane zpět jako vysvětlení a opraví je sama. Než skončí, vykreslí si publikační obrázek přesně tak, jak se bude exportovat, prohlédne si ho a dostane i automatickou kontrolu: popisky přes sousední křivku, skryté popisky, příliš malá nebo „plochá“ spektra, dlouhé názvy. Případné problémy opraví. Výsledek se zobrazí v náhledu; **Použít změny** ho zapíše jako jeden krok Zpět, **Zahodit** ho zahodí. V konverzaci lze pokračovat („ještě zvětši písmo“, „1590 popiš jako ν(C=C)“).
+
+Z názvů souborů a metadat AI pozná podmínky měření: laser (u WDF i z hlavičky přístroje), mřížku, výkon, akumulace, potenciál nebo bod mapy. Barvy laserů jsou vhodné pro tisk: 532 nm zelená, 633 nm oranžovočervená, 785 nm tmavě červená, 1064 nm hnědočervená.
+
+**Vzory:** tlačítkem **Přiložit vzor…**, přetažením nebo vložením ze schránky (⌘V) lze přidat obrázek grafu (PNG, JPG, …, PDF), projekt SpecLabu `.speclab.json` nebo preset `.json` (styl se převezme přesně, volitelně i zpracování a popsané pásy) či soubory spekter. AI pak napodobí rozložení, barvy, osy, písmo, popisky i poměr stran. Co SpecLab neumí (např. legendu uvnitř grafu), AI uvede ve shrnutí.
+
+**Model:** výchozí je `kimi-k3`, nejschopnější model na e-INFRA: zvládá nástroje, vidí obrázky a má kontext 1M tokenů. Je důkladný, ale pomalý: v testech na datech z bakalářky trvala jedna zpráva 7–15 minut (dlouho přemýšlí). Průběh je vidět v chatu. `deepseek-v4.1-flash-thinking` dal v týchž testech srovnatelné výsledky 3–5× rychleji (1,5–7 min) a obrázky vzorů vnímal přesněji. Pro běžnou práci je tedy dobrou volbou. Modely bez obrazového vstupu (`glm-5.3`, `gpt-oss-120b`) dostanou kontrolu obrázku jen jako text. API dovoluje nejvýše 4 souběžné požadavky na klíč; při přetížení aplikace sama počká a zkusí to znovu.
+
+**Co se odesílá:** zadání, souhrn spekter (rozsahy, nejvýraznější pásy, šum, zpracování, styl), názvy spekter a souborů (lze vypnout v **Připojení a soukromí**), vykreslené náhledy grafu a přiložené vzory. Nikdy se neodesílají cesty k souborům ani API klíč.
+
+API klíč získáte na [chat.ai.e-infra.cz](https://chat.ai.e-infra.cz). Zadejte jej v **Připojení a soukromí**; klíč zůstává pouze v paměti po dobu běhu aplikace. Alternativně jej nastavte v proměnné `E_INFRA_API_TOKEN`. Výchozí endpoint je `https://llm.ai.e-infra.cz/v1`.
 
 Na macOS je nejpohodlnější uložit klíč jednou do Klíčenky (příkaz se na klíč zeptá, nezobrazí ho). Aplikace i testovací skript si ho pak načtou samy, pole „Klíč“ může zůstat prázdné:
 

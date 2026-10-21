@@ -78,3 +78,21 @@ def test_overfull_axis_is_reported():
     requests = [LabelRequest(float(c), 0.0, 10, 20) for c in range(0, 50, 2)]
     placements = layout_labels(requests, x, np.zeros_like(x), 0, 50)
     assert not fits(placements, requests, 0, 50)
+
+
+def test_upright_labels_stay_above_their_bands_and_never_overlap():
+    from core.label_layout import layout_upright_labels
+
+    x = np.linspace(0, 900, 2000)
+    centres = [100, 130, 160, 400, 430, 700]
+    y = sum(200 * np.exp(-0.5 * ((x - c) / 6) ** 2) for c in centres)
+    requests = [LabelRequest(float(c), float(np.interp(c, x, y)), 40.0, 14.0, float(i)) for i, c in enumerate(centres)]
+    placements = layout_upright_labels(requests, x, y, 0.0, 900.0)
+    boxes = [(p.x - r.width / 2, p.x + r.width / 2, p.base, p.base + r.height) for p, r in zip(placements, requests)]
+    for (x0, x1, y0, y1), r in zip(boxes, requests):
+        assert x0 <= r.peak_x <= x1                      # still above its own band
+        lo, hi = np.searchsorted(x, [x0, x1])
+        assert y0 >= np.max(y[max(lo - 1, 0):hi + 1]) - 1e-6
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            assert a[1] <= b[0] or b[1] <= a[0] or a[3] <= b[2] or b[3] <= a[2]

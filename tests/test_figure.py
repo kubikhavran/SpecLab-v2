@@ -104,3 +104,26 @@ def test_area_normalized_spectrum_has_short_tick_labels():
               for t in ax.get_yticklabels() if t.get_text()]
     assert labels and all(len(text) <= 4 for text in labels)
     assert "10$^{-5}$" in ax.get_ylabel() or "10$^{-6}$" in ax.get_ylabel()
+
+
+def test_y_range_and_offsets_ignore_data_outside_the_x_limits():
+    x = np.linspace(100, 3200, 3101)
+    edge = 50000 * np.exp(-((x - 100) / 30) ** 2)        # Rayleigh edge outside the view
+    band = 100 * np.exp(-0.5 * ((x - 1000) / 10) ** 2)
+    curves = [Curve("a", x, edge + band, "C0"), Curve("b", x, edge + band, "C1", offset=150.0)]
+    fig = render(FigureSpec(curves=curves, x_limits=(300, 1700), show_y_values=False), 1200, 800, 150)
+    low, high = fig.axes[0].get_ylim()
+    assert high < 1000                                    # not stretched to the 50000 edge
+
+
+def test_horizontal_labels_are_drawn_above_their_peaks():
+    x = np.linspace(400, 1800, 1400)
+    y = sum(h * np.exp(-0.5 * ((x - c) / 15) ** 2) for c, h in [(1040, 1.0), (1158, 0.3), (1286, 0.35)])
+    curve = Curve("s", x, y, "C0", peaks=[(c, f"{c}", h, True) for c, h in [(1040, 1.0), (1158, 0.3), (1286, 0.35)]])
+    fig = render(FigureSpec(curves=[curve], label_angle=0, leader_lines=False), 1200, 800, 200)
+    ax = fig.axes[0]
+    renderer = fig.canvas.get_renderer()
+    for (c, k), text in fig._speclab_texts.items():
+        box = text.get_window_extent(renderer)
+        px = ax.transData.transform((curve.peaks[k][0], 0))[0]
+        assert box.x0 <= px <= box.x1

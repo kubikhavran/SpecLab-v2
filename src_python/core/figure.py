@@ -9,6 +9,7 @@ never overlap and whose leaders never cross.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -17,7 +18,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoMinorLocator, MaxNLocator, ScalarFormatter
 
-from core.label_layout import LabelRequest, LayoutStyle, fits, layout_labels
+from core.label_layout import LabelRequest, LayoutStyle, fits, layout_labels, layout_upright_labels
 from core.palettes import get_palette_colors
 from core.view import view_y, trace_style
 
@@ -85,6 +86,8 @@ class FigureSpec:
     tick_italic: bool = False
     x_marks: bool = True
     y_marks: bool = True
+    tick_direction: str = "out"
+    mirror_ticks: bool = False
     axis_color: str = AXIS_INK
     grid_color: str = "#e6e8eb"
     grid_width: float = 0.5
@@ -96,7 +99,8 @@ class FigureSpec:
     leader_color: str = LEADER
     name_bold: bool = False
     name_italic: bool = False
-    respect_offsets: bool = False
+    name_position: str = "right"     # "right" (beside the plot) | "inside" (above curve ends)
+    respect_offsets: bool = False   # stack offsets are minimums; collisions still raise spectra
     show_peak_labels: bool = True
     background: str = "white"
     text_color: str = INK
@@ -217,8 +221,10 @@ def figure_spec(state) -> FigureSpec:
     return FigureSpec(
         curves=curves,
         x_label=graphics.x_label,
-        y_label="Relative intensity (full scale)"
-        if plot.scale_mode == "full"
+        # Full scale is a view of curves scaled 0–1: a generic title says so, a
+        # title chosen by the user (or the AI) is kept.
+        y_label="Normalized intensity (a.u.)"
+        if plot.scale_mode == "full" and graphics.y_label.strip() in {"", "Y", "Intensity (a.u.)"}
         else graphics.y_label,
         invert_x=plot.invert_x,
         x_limits=(plot.x_min, plot.x_max)
@@ -250,6 +256,8 @@ def figure_spec(state) -> FigureSpec:
         tick_italic=graphics.tick_label_italic,
         x_marks=graphics.show_x_tick_marks,
         y_marks=graphics.show_y_tick_marks,
+        tick_direction=graphics.tick_direction,
+        mirror_ticks=graphics.mirror_ticks,
         axis_color="#b5c7c7" if graphics.plot_canvas == "dark" and graphics.axis_line_color == "#000000" else graphics.axis_line_color,
         background="#162629" if graphics.plot_canvas == "dark" else "white",
         text_color="#b5c7c7" if graphics.plot_canvas == "dark" else INK,
@@ -263,6 +271,7 @@ def figure_spec(state) -> FigureSpec:
         leader_color=peaks.leader_color,
         name_bold=graphics.spectrum_label_bold,
         name_italic=graphics.spectrum_label_italic,
+        name_position=graphics.spectrum_label_position,
         respect_offsets=True,
     )
 
@@ -325,7 +334,10 @@ def _peak_layout(ax, renderer, curve, texts):
                     px, sign * py, extent.width, extent.height, curve.peaks[k][2]
                 )
             )
-        placements = layout_labels(requests, cx, sign * cy, bbox.x0, bbox.x1, style)
+        # Horizontal text stays above its band; vertical text uses shared bends.
+        upright = abs(np.sin(np.radians(texts[chosen[0]].get_rotation()))) < 0.5
+        placements = (layout_upright_labels if upright else layout_labels)(
+            requests, cx, sign * cy, bbox.x0, bbox.x1, style)
         crowded = crowded or not fits(placements, requests, bbox.x0, bbox.x1)
         inverse = ax.transData.inverted()
         for k, request, placement in zip(chosen, requests, placements):
@@ -338,11 +350,12 @@ def _peak_layout(ax, renderer, curve, texts):
             _, _, descent = renderer.get_text_width_height_descent(
                 texts[k].get_text(), texts[k].get_fontproperties(), ismath=False
             )
-            texts[k].set_position(inverse.transform((placement.x + descent / 2, base)))
+            nudge = 0.0 if upright else descent / 2
+            texts[k].set_position(inverse.transform((placement.x + nudge, base)))
             texts[k].set_verticalalignment("bottom" if upward else "top")
             texts[k].leader = [
                 inverse.transform((lx, sign * ly)) for lx, ly in placement.leader
-            ]
+            ] or None
             tip = base + sign * request.height
             margin = 4 * scale  # keep labels clear of the frame and tick marks
             if upward:
@@ -370,6 +383,10 @@ MIN_PEAK_FRACTION = 0.85
 MAX_SHIFT_WIDTHS = 2.5
 
 
+# rc_context changes global rcParams; the AI agent renders from a worker thread.
+_RENDER_LOCK = threading.RLock()
+
+
 def render(
     spec: FigureSpec,
     width_px: int = 1600,
@@ -380,8 +397,14 @@ def render(
     """Build the figure; save it with ``save(fig, path)``."""
     from core.sampling import with_gap_breaks
 
-    with rc_context(_style(spec)):
+    if not spec.curves:
+        raise ValueError("Žádné viditelné spektrum k vykreslení.")
+
+    with _RENDER_LOCK, rc_context(_style(spec)):
         fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+        # Generic font families resolve at draw time: saving must use the same
+        # rcParams as the layout, otherwise text is drawn in another (wider) font.
+        fig._speclab_rc = _style(spec)
         FigureCanvasAgg(fig)
         fig.patch.set_alpha(0.0 if transparent else 1.0)
         fig.patch.set_facecolor(spec.background)
@@ -441,7 +464,14 @@ def render(
         if not spec.show_x_values:
             ax.tick_params(axis="x", which="both", labelbottom=False)
         ax.tick_params(axis="x", which="both", bottom=spec.x_marks)
-        ax.tick_params(axis="y", which="both", left=spec.y_marks)
+        # Tick marks without values only make sense on a drawn ordinate line.
+        ax.tick_params(axis="y", which="both",
+                       left=spec.y_marks and (spec.show_y_values or ax.spines["left"].get_visible()))
+        ax.tick_params(axis="both", which="both", direction=spec.tick_direction)
+        if spec.mirror_ticks and spec.frame == "box":
+            ax.tick_params(axis="x", which="both", top=spec.x_marks, labeltop=False)
+            ax.tick_params(axis="y", which="both", right=spec.y_marks and ax.spines["left"].get_visible(),
+                           labelright=False)
         for tick in ax.get_xticklabels() + ax.get_yticklabels():
             tick.set_fontweight("bold" if spec.tick_bold else "normal")
             tick.set_fontstyle("italic" if spec.tick_italic else "normal")
@@ -475,8 +505,14 @@ def render(
         ax.set_xlim((x_high, x_low) if spec.invert_x else (x_low, x_high))
 
         def data_limits():
-            lows = [float(np.min(c.y + c.offset)) for c in spec.curves]
-            highs = [float(np.max(c.y + c.offset)) for c in spec.curves]
+            # Only what is visible counts: a Rayleigh edge or a solvent band outside
+            # the chosen X range must not flatten the shown spectra.
+            lows, highs = [], []
+            for c in spec.curves:
+                inside = (c.x >= x_low) & (c.x <= x_high) & np.isfinite(c.y)
+                values = (c.y[inside] if np.count_nonzero(inside) > 1 else c.y) + c.offset
+                lows.append(float(np.min(values)))
+                highs.append(float(np.max(values)))
             span = max(highs) - min(lows) or 1.0
             return spec.y_limits or (min(lows) - 0.04 * span, max(highs) + 0.06 * span)
 
@@ -509,6 +545,7 @@ def render(
                 ax.set_position([box.x0, box.y0, box.width - shrink, box.height])
 
         texts = {}
+        fig._speclab_texts_live = texts   # inside curve names avoid these labels
         for c, curve in enumerate(spec.curves):
             for k, (px, text, _importance, upward) in enumerate(curve.peaks):
                 if not spec.show_peak_labels:
@@ -532,31 +569,40 @@ def render(
                 )
         stacked = len(spec.curves) > 1 and any(c.offset for c in spec.curves)
         peak_pt = spec.peak_pt
-        for _round in range(4 * len(spec.curves) if stacked else 1):
-            bottom, top, peak_pt = _layout_all(
-                ax, renderer, spec, texts, peak_pt, bottom, top
-            )
-            if (
-                not stacked
-                or spec.respect_offsets
-                or not _separate(ax, renderer, spec, texts, lines)
-            ):
+        # Separation may enlarge the Y range only so far: beyond that the curves
+        # would turn into flat lines under labels of fixed size. Remaining
+        # collisions are reported (collisions()) instead.
+        span_limit = 3.0 * (top - bottom)
+
+        def settle_labels():
+            nonlocal bottom, top, peak_pt
+            for _round in range(4 * len(spec.curves) if stacked else 1):
+                bottom, top, peak_pt = _layout_all(ax, renderer, spec, texts, peak_pt, bottom, top)
+                # The chosen stack offset is a minimum: upper spectra are raised only
+                # where labels or curves of neighbours would otherwise collide.
+                if not stacked or not _separate(ax, renderer, spec, texts, lines, span_limit):
+                    return
+                bottom, top = data_limits()
+                ax.set_ylim(bottom, top)
+            # the last pass moved curves: lay labels out once more
+            bottom, top, peak_pt = _layout_all(ax, renderer, spec, texts, peak_pt, bottom, top)
+
+        # Labels, curve names and the canvas interact: growing the y range widens the
+        # tick labels and names need room, so the axes shrink, which changes the
+        # label geometry again. Repeat until nothing moves.
+        for _settle in range(4):
+            if spec.show_names and spec.name_position == "inside":
+                _name_curves(ax, renderer, spec)   # obstacles for the separation
+            settle_labels()
+            moved = False
+            for _ in range(4):
+                if spec.show_names:
+                    _name_curves(ax, renderer, spec)
+                if not _fit_inside(fig, ax, renderer):
+                    break
+                moved = True
+            if not moved:
                 break
-            bottom, top = data_limits()
-            ax.set_ylim(bottom, top)
-        else:  # the last pass moved curves: lay labels out once more
-            bottom, top, peak_pt = _layout_all(
-                ax, renderer, spec, texts, peak_pt, bottom, top
-            )
-        # The y range grew for labels, so tick labels may have widened: keep the
-        # whole axes (titles, ticks, names) inside the canvas, then lay out again.
-        for _ in range(3):
-            if not _fit_inside(fig, ax, renderer):
-                break
-            if texts:
-                bottom, top, peak_pt = _layout_all(
-                    ax, renderer, spec, texts, peak_pt, bottom, top
-                )
         # Explicit positions are data-space offsets from the actual peak anchor.
         # Apply after automatic layout so export keeps the scientist's placement.
         for (c, k), text in texts.items():
@@ -595,13 +641,19 @@ def render(
                     clip_on=False,
                 )
         if spec.show_names:
-            for _ in range(4):
-                _name_curves(ax, renderer, spec)
-                if not _fit_inside(fig, ax, renderer):
-                    break
+            _name_curves(ax, renderer, spec)
+            _fit_inside(fig, ax, renderer)
+        _thin_x_ticks(ax, renderer, spec)
         fig._speclab_dropped_labels = sum(len(c.peaks) for c in spec.curves) - len(
             texts
         )
+        fig._speclab_lines = lines
+        fig._speclab_texts = dict(texts)
+        # Per curve: (labels shown, labels requested), e.g. for the AI figure check.
+        fig._speclab_label_counts = [
+            (sum(1 for (cc, _k) in texts if cc == c), len(curve.peaks))
+            for c, curve in enumerate(spec.curves)
+        ]
         return fig
 
 
@@ -658,6 +710,13 @@ def _layout_all(ax, renderer, spec, texts, peak_pt, bottom, top):
             weakest = min(near, key=lambda k: curve.peaks[k][2])
             texts.pop((c, weakest)).remove()
             continue
+        if spec.show_names and spec.name_position == "inside":
+            # Names inside the plot need headroom just like peak labels.
+            _name_curves(ax, renderer, spec)
+            frame_top = ax.get_window_extent(renderer).y1
+            margin = 3 * ax.figure.dpi / 72
+            for name in getattr(ax, "_speclab_names", []):
+                top_over = max(top_over, name.get_window_extent(renderer).y1 + margin - frame_top)
         if spec.y_limits is not None or (top_over <= 0.5 and bottom_over <= 0.5):
             break
         height = ax.get_window_extent(renderer).height
@@ -670,7 +729,7 @@ def _layout_all(ax, renderer, spec, texts, peak_pt, bottom, top):
     return bottom, top, peak_pt
 
 
-def _separate(ax, renderer, spec, texts, lines) -> bool:
+def _separate(ax, renderer, spec, texts, lines, span_limit=None) -> bool:
     """Raise upper spectra until curves, labels and leaders of neighbours clear.
 
     Envelopes are measured per pixel column in display space; returns True if
@@ -692,21 +751,38 @@ def _separate(ax, renderer, spec, texts, lines) -> bool:
             inside = (columns >= box.x0) & (columns <= box.x1)
             upper[inside] = np.fmax(upper[inside], box.y1)
             lower[inside] = np.fmin(lower[inside], box.y0)
+        for name in getattr(ax, "_speclab_names", []):
+            if getattr(name, "_speclab_curve", None) == c:
+                box = name.get_window_extent(renderer)
+                inside = (columns >= box.x0) & (columns <= box.x1)
+                upper[inside] = np.fmax(upper[inside], box.y1)
         envelopes.append((upper, lower))
-    per_px = np.diff(ax.get_ylim())[0] / bbox.height
-    changed = False
+    needs = []
     for c in range(1, len(spec.curves)):
         overlap = envelopes[c - 1][0] - envelopes[c][1]
-        need = np.nanmax(overlap) + margin if np.any(np.isfinite(overlap)) else -1
-        if need > 0.5:
-            # Raising curves widens the y range, which makes labels taller in
-            # data units; a small overshoot avoids many tiny iterations.
-            shift = need * per_px * 1.25
-            for upper_curve in spec.curves[c:]:
-                upper_curve.offset += shift
-            changed = True
-            break   # remeasure after each raise; labels move with their curves
+        need = np.nanmax(overlap) + margin if np.any(np.isfinite(overlap)) else 0.0
+        needs.append(need if need > 0.5 else 0.0)
+    total = sum(needs)
+    changed = total > 0
     if changed:
+        # Raising curves widens the y range, which shrinks the data per pixel while
+        # labels keep their size in pixels. Solve for the final range in one step,
+        # R' = R / (1 − Σneed / H), so that every pair gains its pixels at once.
+        height = bbox.height
+        span = float(np.diff(ax.get_ylim())[0])
+        grown = span / max(0.2, 1.0 - total / height)
+        if span_limit is not None and grown > span_limit:
+            if span >= 0.98 * span_limit:
+                return False
+            # Use the remaining room proportionally; neighbours may still touch.
+            share = (span_limit - span) / (grown - span)
+            needs = [need * share for need in needs]
+            grown = span_limit
+        per_px = grown / height
+        lift = 0.0
+        for c, need in enumerate(needs, start=1):
+            lift += need * per_px * 1.05
+            spec.curves[c].offset += lift
         from core.sampling import with_gap_breaks
 
         for line, curve in zip(lines, spec.curves):
@@ -720,12 +796,21 @@ def _name_curves(ax, renderer, spec):
     for text in getattr(ax, "_speclab_names", []):
         text.remove()
     ax._speclab_names = []
+    if spec.name_position == "inside":
+        _name_curves_inside(ax, renderer, spec)
+        return
     entries = []
+    low, high = sorted(ax.get_xlim())
     for curve in spec.curves:
-        x, y = curve.x, curve.y + curve.offset
-        right = int(np.argmin(x) if spec.invert_x else np.argmax(x))
-        window = y[max(right - 5, 0) : right + 6]
-        _, display_y = ax.transData.transform((x[right], float(np.median(window))))
+        x, y = np.asarray(curve.x, dtype=float), np.asarray(curve.y, dtype=float) + curve.offset
+        # Anchor at the curve end that is visible at the right edge of the axes.
+        inside = (x >= low) & (x <= high)
+        if not np.any(inside):
+            inside = np.ones_like(x, dtype=bool)
+        xs, ys = x[inside], y[inside]
+        right = int(np.argmin(xs) if spec.invert_x else np.argmax(xs))
+        window = ys[np.argsort(np.abs(xs - xs[right]))[:11]]
+        _, display_y = ax.transData.transform((xs[right], float(np.median(window))))
         entries.append([display_y, curve])
     entries.sort(key=lambda e: e[0])
     height = spec.tick_pt * ax.figure.dpi / 72 * 1.3
@@ -747,8 +832,135 @@ def _name_curves(ax, renderer, spec):
             fontstyle="italic" if spec.name_italic else "normal",
             clip_on=False,
         )
+        _fit_name(text, renderer, 0.30 * ax.figure.get_window_extent(renderer).width, spec.tick_pt)
         ax._speclab_names.append(text)
 
 
-def save(fig: Figure, path: str, transparent: bool = False) -> None:
-    fig.savefig(path, dpi=fig.dpi, transparent=transparent, facecolor="none" if transparent else fig.get_facecolor())
+def _name_curves_inside(ax, renderer, spec):
+    """Names inside the plot, right-aligned just above the visible right end of
+    each curve and above its own peak labels there (a common journal style)."""
+    bbox = ax.get_window_extent(renderer)
+    pad = 4 * ax.figure.dpi / 72
+    right = bbox.x1 - pad
+    texts = getattr(ax.figure, "_speclab_texts_live", {})
+    inverse = ax.transAxes.inverted()
+    for c, curve in enumerate(spec.curves):
+        text = ax.text(0, 0, typographic(curve.name), transform=ax.transAxes, ha="right", va="bottom",
+                       fontsize=spec.tick_pt, color=curve.color, clip_on=False,
+                       fontweight="bold" if spec.name_bold else "normal",
+                       fontstyle="italic" if spec.name_italic else "normal")
+        _fit_name(text, renderer, 0.45 * bbox.width, spec.tick_pt)
+        width = text.get_window_extent(renderer).width
+        points = ax.transData.transform(np.c_[curve.x, curve.y + curve.offset])
+        under = (points[:, 0] >= right - width) & (points[:, 0] <= right)
+        top = float(np.max(points[under, 1])) if np.any(under) else float(np.median(points[:, 1]))
+        for (cc, _k), label in texts.items():
+            box = label.get_window_extent(renderer)
+            if cc == c and box.x1 > right - width and box.x0 < right:
+                top = max(top, box.y1)
+        _, axes_y = inverse.transform((right, top + pad))
+        axes_x, _ = inverse.transform((right, 0))
+        text.set_position((axes_x, axes_y))
+        text._speclab_curve = c
+        ax._speclab_names.append(text)
+
+
+def save(fig: Figure, path, transparent: bool = False, **kwargs) -> None:
+    """Save with the fonts used for the layout (``path`` may be a file object)."""
+    with _RENDER_LOCK, rc_context(getattr(fig, "_speclab_rc", {})):
+        fig.savefig(path, dpi=fig.dpi, transparent=transparent,
+                    facecolor="none" if transparent else fig.get_facecolor(), **kwargs)
+
+
+def draw(fig: Figure) -> None:
+    """Draw onto the Agg canvas (e.g. for an on-screen preview) with the layout fonts."""
+    with _RENDER_LOCK, rc_context(getattr(fig, "_speclab_rc", {})):
+        fig.canvas.draw()
+
+
+def to_png(fig: Figure) -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    save(fig, buffer, format="png")
+    return buffer.getvalue()
+
+
+def _fit_name(text, renderer, limit: float, size: float) -> None:
+    """Long names (e.g. raw file names) may take at most ``limit`` pixels:
+    first a slightly smaller font, then an ellipsis in the middle."""
+    if text.get_window_extent(renderer).width <= limit:
+        return
+    text.set_fontsize(0.8 * size)
+    if text.get_window_extent(renderer).width <= limit:
+        return
+    full = text.get_text()
+    keep_low, keep_high = 4, len(full) - 1
+    best = full[:4] + "…"
+    while keep_low <= keep_high:
+        keep = (keep_low + keep_high) // 2
+        head = (keep + 1) // 2
+        candidate = full[:head] + "…" + full[len(full) - (keep - head):]
+        text.set_text(candidate)
+        if text.get_window_extent(renderer).width <= limit:
+            best, keep_low = candidate, keep + 1
+        else:
+            keep_high = keep - 1
+    text.set_text(best)
+
+
+def _thin_x_ticks(ax, renderer, spec) -> None:
+    """Fewer major X ticks when their labels would touch on a narrow axis."""
+    from matplotlib.font_manager import FontProperties
+
+    if not spec.show_x_values:
+        return
+    font = FontProperties(size=spec.tick_pt, weight="bold" if spec.tick_bold else "normal")
+    gap = 0.6 * spec.tick_pt * ax.figure.dpi / 72
+    low, high = sorted(ax.get_xlim())
+    for bins in (7, 6, 5, 4, 3, 2):
+        locator = MaxNLocator(nbins=bins, steps=[1, 2, 2.5, 5, 10])
+        values = [v for v in locator.tick_values(low, high) if low <= v <= high]
+        labels = ax.xaxis.get_major_formatter().format_ticks(values)
+        spans = []
+        for value, label in zip(values, labels):
+            width = renderer.get_text_width_height_descent(label.replace("$", ""), font, ismath=False)[0]
+            centre = ax.transData.transform((value, 0))[0]
+            spans.append((centre - width / 2, centre + width / 2))
+        spans.sort()
+        if all(b[0] - a[1] >= gap for a, b in zip(spans, spans[1:])):
+            if bins != 7:
+                ax.xaxis.set_major_locator(locator)
+            return
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=2, steps=[1, 2, 2.5, 5, 10]))
+
+
+def collisions(fig: Figure) -> dict:
+    """Peak labels touching another spectrum or another spectrum's labels.
+
+    {'label_curve': [(label text, curve index of the label, curve index hit)],
+     'label_label': [(text a, text b)]}; used to check AI-made figures.
+    """
+    with _RENDER_LOCK, rc_context(getattr(fig, "_speclab_rc", {})):
+        renderer = fig.canvas.get_renderer()
+        ax = fig.axes[0]
+        texts = getattr(fig, "_speclab_texts", {})
+        lines = getattr(fig, "_speclab_lines", [])
+        boxes = [((c, k), text.get_text(), text.get_window_extent(renderer).shrunk(0.92, 0.92))
+                 for (c, k), text in texts.items() if text.get_visible()]
+        paths = [ax.transData.transform(np.c_[line.get_xdata(), line.get_ydata()]) for line in lines]
+    hits, pairs = [], []
+    for (c, _k), label, box in boxes:
+        for index, points in enumerate(paths):
+            if index == c:
+                continue
+            finite = np.isfinite(points).all(axis=1)
+            inside = ((points[finite, 0] > box.x0) & (points[finite, 0] < box.x1)
+                      & (points[finite, 1] > box.y0) & (points[finite, 1] < box.y1))
+            if inside.any():
+                hits.append((label, c, index))
+    for i, ((ca, _ka), label_a, a) in enumerate(boxes):
+        for (cb, _kb), label_b, b in boxes[i + 1:]:
+            if ca != cb and a.x0 < b.x1 and b.x0 < a.x1 and a.y0 < b.y1 and b.y0 < a.y1:
+                pairs.append((label_a, label_b))
+    return {"label_curve": hits, "label_label": pairs}

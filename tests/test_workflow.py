@@ -236,12 +236,12 @@ def test_workflow_navigation_scope_numbers_and_ai_continuation(qtbot):
     assert figure_spec(state).curves[0].name == state.spectra[0].name
     w._show_selection(True)
     w.list.selectAll()
-    # AI reads all scoped curves; names require the explicit checkbox.
-    context = w.ai_panel._context()
-    assert len(context["targets"]) == 2
-    assert all("name" not in s for s in context["collection"])
+    # The chat assistant receives the current workflow selection; names follow the privacy toggle.
+    assert w.ai_panel._selected_ids() == [s.id for s in state.spectra]
+    w.ai_panel.send_names.setChecked(False)
+    assert w.ai_panel._session.toolbox.hide_names
     w.ai_panel.send_names.setChecked(True)
-    assert all("name" in s for s in w.ai_panel._context()["collection"])
+    assert not w.ai_panel._session.toolbox.hide_names
     w._dirty = False
     w.close()
 

@@ -112,6 +112,8 @@ class GraphicsSettings:
     show_y_tick_marks: bool = True
     show_x_tick_labels: bool = True
     show_y_tick_labels: bool = False
+    tick_direction: str = "out"       # "out" | "in" | "inout"
+    mirror_ticks: bool = False        # also on the top/right side of a box frame
     show_grid: bool = False
     grid_color: str = "#e2e8f0"
     grid_width: int = 1
@@ -124,6 +126,7 @@ class GraphicsSettings:
     tick_font_size: int = 30
     palette: str = "auto"
     inline_spectrum_labels: bool = True
+    spectrum_label_position: str = "right"   # "right" (beside the plot) | "inside" (above curve ends)
     spectrum_label_bold: bool = False
     spectrum_label_italic: bool = False
     preview_canvas_size: bool = False

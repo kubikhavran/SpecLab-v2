@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication
 from app.main_window import MainWindow
 
 
-def test_studio_ai_preview_manual_continuation_and_peak_table(tmp_path):
+def test_studio_manual_continuation_and_peak_table(tmp_path):
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
     window.show()
@@ -15,11 +15,7 @@ def test_studio_ai_preview_manual_continuation_and_peak_table(tmp_path):
     app.processEvents()
     state = window._state
     original = list(state.active_spectrum.y)
-    window.ai_panel._example()
-    window.ai_panel._preview()
-    assert state.preview and window.ai_panel.apply_button.isEnabled()
-    assert state.active_spectrum.y == original
-    window.ai_panel._apply()
+    state.apply_operations([{"op": "smooth", "params": {"window": 11, "poly_order": 3}}])
     smoothed = list(state.active_spectrum.y)
     assert smoothed != original
     state.apply_operations([{"op": "normalize", "params": {"method": "max"}}])
@@ -152,52 +148,5 @@ def test_auto_offset_separates_overlay_curves():
     offset = state.plot.stack_offset
     assert state.plot.show_all_spectra and offset > 0
     assert np.min(second) + offset > np.max(first)
-    window._dirty = False
-    window.close()
-
-
-def test_ai_presentation_plan_styles_figure_and_detects_peaks():
-    import json
-
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow()
-    window.resize(1500, 940)
-    window.show()
-    window.load_demo()
-    app.processEvents()
-    state = window._state
-    ai = window.ai_panel
-    plan = {
-        "explanation": "Vyhlazení a popisky píků.",
-        "warnings": [],
-        "operations": [{"op": "smooth", "params": {"window": 9, "poly_order": 3}},
-                       {"op": "normalize", "params": {"method": "max"}}],
-        "presentation": {
-            "graphics": {"x_label": "Raman shift (cm^{-1})", "font_family": "Times New Roman"},
-            # Relative prominence survives the normalisation above.
-            "peaks": {"relative_prominence": 0.2, "max_peaks": 6, "label_angle_deg": 90},
-            "detect_peaks": True,
-        },
-    }
-    ai._proposal_source, ai._proposal_ids = "ai", [state.active_spectrum_id]
-    ai._proposal_revision = state.revision
-    ai.editor.setPlainText(json.dumps(plan))
-    ai._preview()
-    assert ai.apply_button.isEnabled()
-    ai._apply()
-    assert state.graphics.font_family == "Times New Roman"
-    assert state.graphics.x_label == "Raman shift (cm^{-1})"
-    span = float(np.ptp(state.displayed_y(state.active_spectrum_id)))
-    assert abs(state.peaks_settings.min_prominence - 0.2 * span) < 1e-9
-    assert 1 <= len(state.peaks_auto[state.active_spectrum_id]) <= 6
-    app.processEvents()
-    assert window._plot._labels and all(label["item"].isVisible() for label in window._plot._labels)
-    # Styling-only plans skip the data preview.
-    plan = {"explanation": "Jen vzhled.", "warnings": [], "operations": [],
-            "presentation": {"graphics": {"frame_mode": "box"}}}
-    ai.editor.setPlainText(json.dumps(plan))
-    ai._preview()
-    ai._apply()
-    assert state.graphics.frame_mode == "box"
     window._dirty = False
     window.close()

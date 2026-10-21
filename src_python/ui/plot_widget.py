@@ -199,11 +199,19 @@ class SpectrumPlotWidget(QWidget):
             else list(state.spectra)
         )
         order = [s for s in order if s.meta.get("trace_style",{}).get("visible",True)]
-        curves = [
-            view_y(state.displayed_y(spec.id), state.plot.scale_mode) for spec in order
-        ]
-        if len(curves) < 2:
+        if len(order) < 2:
             return 0.0
+        plot = state.plot
+        curves = []
+        for spec in order:
+            x = np.asarray(spec.x, dtype=float)
+            y = view_y(state.displayed_y(spec.id), plot.scale_mode)
+            # Only the visible X range counts (e.g. not a Rayleigh edge outside it).
+            if plot.x_min is not None and plot.x_max is not None:
+                inside = (x >= min(plot.x_min, plot.x_max)) & (x <= max(plot.x_min, plot.x_max))
+                if np.count_nonzero(inside) > 1:
+                    y = y[inside]
+            curves.append(y)
         gap = max(
             float(np.max(lower) - np.min(upper))
             for lower, upper in zip(curves, curves[1:])
@@ -579,8 +587,8 @@ class SpectrumPlotWidget(QWidget):
                 y_label = f"Derivative ({active.meta.get('y_unit', 'a.u.')})"
             elif active.meta.get("ordinate_processing", "").startswith("normalize"):
                 y_label = "Normalized intensity (a.u.)"
-        if p.scale_mode == "full":
-            y_label = "Relative intensity (full scale)"
+        if p.scale_mode == "full" and y_label.strip() in {"", "Y", "Intensity (a.u.)", "Intenzita (a.u.)"}:
+            y_label = "Normalized intensity (a.u.)"
         pi.setLabel("left", axis_html(y_label), **style)
         for name in ("bottom", "left", "top", "right"):
             axis = pi.getAxis(name)
@@ -594,7 +602,8 @@ class SpectrumPlotWidget(QWidget):
             ("left", g.show_y_tick_marks, g.show_y_tick_labels),
         ]:
             axis = pi.getAxis(name)
-            axis.setStyle(showValues=values, tickLength=-5 if marks else 0)
+            inward = g.tick_direction == "in"
+            axis.setStyle(showValues=values, tickLength=(5 if inward else -5) if marks else 0)
             axis.setTickPen(
                 pg.mkPen(g.grid_color, width=g.grid_width)
                 if p.show_grid or g.show_grid
@@ -602,8 +611,10 @@ class SpectrumPlotWidget(QWidget):
             )
         pi.showAxis("top", g.frame_mode == "box")
         pi.showAxis("right", g.frame_mode == "box")
-        pi.getAxis("top").setStyle(showValues=False)
-        pi.getAxis("right").setStyle(showValues=False)
+        mirrored = g.frame_mode == "box" and g.mirror_ticks
+        for name, marks in (("top", g.show_x_tick_marks), ("right", g.show_y_tick_marks)):
+            length = (5 if g.tick_direction == "in" else -5) if mirrored and marks else 0
+            pi.getAxis(name).setStyle(showValues=False, tickLength=length)
         pi.showGrid(
             x=p.show_grid or g.show_grid, y=p.show_grid or g.show_grid, alpha=0.15
         )

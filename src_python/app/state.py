@@ -802,6 +802,40 @@ class AppState(QObject):
         self.preview_changed.emit()
         return self.preview
 
+    def preview_snapshot(self, snapshot: dict, expected_signature: str, label: str, source: str = 'ai'):
+        """Stage a whole workspace prepared elsewhere (the AI sandbox) for review.
+
+        ``expected_signature`` is this workspace's signature when the sandbox was
+        created; any edit since then makes the proposal stale. Data changes are
+        shown as preview curves; ``apply_preview`` commits everything as one step.
+        """
+        if source not in {'manual', 'ai', 'preset'}:
+            raise ValueError('Neznámý původ návrhu.')
+        if expected_signature != self._workflow_signature():
+            raise ValueError('Pracovní prostor se od začátku práce AI změnil. Požádej AI znovu.')
+        staged = AppState()
+        staged._restore(snapshot)
+        if {s.id for s in staged.spectra} != {s.id for s in self._spectra}:
+            raise ValueError('Návrh AI nesmí přidávat ani odebírat spektra.')
+        current = {s.id: s for s in self._spectra}
+        results = {}
+        for spec in staged.spectra:
+            old, y = current[spec.id], staged.displayed_y(spec.id)
+            old_y = self.displayed_y(spec.id)
+            same = ((old.x is spec.x or np.array_equal(old.x, spec.x))
+                    and (old_y is y or np.array_equal(old_y, y)))
+            if not same:
+                results[spec.id] = {'x': spec.x, 'y': y, 'meta': spec.meta}
+        proposal = {'id': uuid.uuid4().hex, 'revision': self.revision,
+                    'signature': self._workflow_signature(), 'workflow': True,
+                    'spectrum_ids': [s.id for s in staged.spectra], 'operations': [],
+                    'source': source, 'label': str(label)[:240], 'results': results}
+        self.clear_preview()
+        self._workflow_target = staged._snapshot()
+        self._preview = self._copy_preview(proposal)
+        self.preview_changed.emit()
+        return self.preview
+
     def preview_state(self):
         if getattr(self, '_workflow_target', None) is None:
             return None

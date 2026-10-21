@@ -298,7 +298,9 @@ class ExportPanel(QWidget):
         except (ValueError, RuntimeError) as exc:
             self._img_info.setText(f'Náhled nelze vytvořit: {exc}')
             return
-        figure.canvas.draw()
+        from core.figure import draw
+
+        draw(figure)
         buffer = figure.canvas.buffer_rgba()
         height, width = buffer.shape[:2]
         image = QImage(bytes(buffer), width, height, 4 * width, QImage.Format.Format_RGBA8888).copy()

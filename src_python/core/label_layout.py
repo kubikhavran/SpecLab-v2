@@ -196,3 +196,63 @@ def layout_with_thinning(requests, curve_x, curve_y, x_low, x_high, style=None, 
         near = [i for i in active if abs(requests[i].peak_x - centre) <= reach] or active
         active.remove(min(near, key=lambda i: requests[i].importance))
     return {}
+
+
+def layout_upright_labels(requests, curve_x, curve_y, x_low, x_high, style=None):
+    """Layout for horizontal (upright) labels: keep each label above its band.
+
+    Horizontal text is wide, so pushing labels sideways quickly detaches them
+    from their bands. Instead, the most prominent bands are placed first right
+    above their maxima; a colliding label is nudged sideways only while it
+    still covers its band, otherwise it moves up and gets a vertical leader.
+    Same coordinate conventions as ``layout_labels``.
+    """
+    style = style or LayoutStyle()
+    if not requests:
+        return []
+    curve_x = np.asarray(curve_x, dtype=float)
+    curve_y = np.asarray(curve_y, dtype=float)
+    placed = []                    # (x0, x1, y0, y1) of already placed labels
+    result = [None] * len(requests)
+
+    def collides(x0, x1, y0, y1):
+        return next((box for box in placed if x0 < box[1] + style.spacing and box[0] - style.spacing < x1
+                     and y0 < box[3] + style.spacing and box[2] - style.spacing < y1), None)
+
+    def crosses(px, y0, y1):
+        return any(box[0] < px < box[1] and y0 < box[3] and box[2] < y1 for box in placed)
+
+    order = sorted(range(len(requests)), key=lambda i: -requests[i].importance)
+    for i in order:
+        r = requests[i]
+        half = r.width / 2
+        start = r.peak_y + style.gap
+
+        def base_at(centre):
+            top = _curve_max(curve_x, curve_y, centre - half, centre + half, r.peak_y)
+            return max(top + style.gap, start) + style.label_gap
+
+        centre = min(max(r.peak_x, x_low + half), x_high - half)
+        base = base_at(centre)
+        if collides(centre - half, centre + half, base, base + r.height):
+            # Nudge sideways while the label still covers its band.
+            for shift in np.linspace(0.1, 0.45, 8) * r.width:
+                candidates = [c for c in (r.peak_x - shift, r.peak_x + shift)
+                              if x_low + half <= c <= x_high - half]
+                free = [c for c in candidates
+                        if not collides(c - half, c + half, base_at(c), base_at(c) + r.height)]
+                if free:
+                    centre = free[0]
+                    base = base_at(centre)
+                    break
+            else:
+                while (box := collides(centre - half, centre + half, base, base + r.height)) is not None:
+                    base = box[3] + style.spacing + style.label_gap
+        leader_end = base - style.label_gap
+        if leader_end - start > style.stub and not crosses(r.peak_x, start, leader_end):
+            leader = [(r.peak_x, start), (r.peak_x, leader_end)]
+        else:
+            leader = []
+        placed.append((centre - half, centre + half, base, base + r.height))
+        result[i] = LabelPlacement(centre, base, leader)
+    return result

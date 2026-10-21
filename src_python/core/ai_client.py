@@ -99,8 +99,24 @@ class AIError(ValueError):
     pass
 
 
+class VisionUnsupported(AIError):
+    """The model rejected image input; callers retry without images."""
+
+
 _NON_CHAT_MODEL_MARKERS = ("embed", "rerank", "whisper", "e5-")
-PREFERRED_MODEL = "gpt-oss-120b"   # fast and reliable in live tests (2026-10)
+# Kimi K3 is the strongest model on e-INFRA (tools + vision, 1M context, 2026-10);
+# speed is secondary for an assistant that edits figures.
+PREFERRED_MODEL = "kimi-k3"
+FALLBACK_MODELS = ("kimi-k3", "deepseek-v4.1-flash-thinking", "glm-5.3", "qwen3.8-flash-next", "gpt-oss-120b")
+# Aliases and families without image input on e-INFRA (checked live 2026-10).
+_TEXT_ONLY_MARKERS = ("glm", "coder", "gpt-oss", "mini", "nrp")
+MAX_CHAT_BYTES = 8_000_000
+
+
+def supports_vision(model: str) -> bool:
+    """Best guess before the first request; a 400 'not multimodal' corrects it."""
+    name = model.lower()
+    return not any(marker in name for marker in _TEXT_ONLY_MARKERS)
 
 
 def chat_models(models: list[str]) -> list[str]:
@@ -229,7 +245,7 @@ def parse_plan(text: str) -> dict:
     return plan
 
 
-def _band_summary(x, y, y_kind: str) -> dict:
+def _band_summary(x, y, y_kind: str, limit: int = 10) -> dict:
     """Objective band widths and noise so a model can size filters safely.
 
     Bands must stand clear of the noise (prominence ≥ 6 σ) and are measured on
@@ -238,6 +254,8 @@ def _band_summary(x, y, y_kind: str) -> dict:
     the points), so a broad fluorescence or carbon background neither hides
     the real bands nor is reported as the only "band".
     """
+    import warnings
+
     from scipy.signal import find_peaks, peak_widths, savgol_filter
 
     from core.sampling import segments
@@ -253,7 +271,9 @@ def _band_summary(x, y, y_kind: str) -> dict:
         smooth = savgol_filter(local, 7, 2)
         window = max(31, int(0.08 * len(local))) | 1
         # SG(7, 2) leaves sqrt(1/3) of white noise: 6 σ of the smoothed copy.
-        found, props = find_peaks(smooth, prominence=6 * sigma / np.sqrt(3), wlen=window)
+        with warnings.catch_warnings():   # flat plateaus give zero-prominence candidates
+            warnings.simplefilter("ignore", RuntimeWarning)   # scipy PeakPropertyWarning
+            found, props = find_peaks(smooth, prominence=6 * sigma / np.sqrt(3), wlen=window)
         if not len(found):
             continue
         keep = props["prominences"] >= 0.03 * props["prominences"].max()
@@ -269,7 +289,7 @@ def _band_summary(x, y, y_kind: str) -> dict:
                 "fwhm_x": round(float(width * step), 2),
             })
     bands.sort(key=lambda band: -band["relative_prominence"])
-    summary = {"strongest_bands": bands[:10], "relative_noise": round(sigma / span, 5)}
+    summary = {"strongest_bands": bands[:limit], "relative_noise": round(sigma / span, 5)}
     if bands:
         widths = [b["fwhm_points"] for b in bands[:10]]
         summary["narrowest_strong_band_fwhm_points"] = min(widths)
@@ -465,6 +485,167 @@ class EInfraClient:
             raise AIError("API vrátilo neplatný seznam modelů.") from None
         return sorted(set(models))
 
+    # ── Tool-calling chat (used by the agent) ──────────────────────────────
+
+    def _wait(self, seconds: float, cancel=None) -> None:
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if self._cancelled or (cancel and cancel()):
+                raise AIError("Požadavek byl zrušen.")
+            time.sleep(min(0.2, max(0.0, end - time.monotonic())))
+
+    def _open_chat(self, payload: dict, cancel=None):
+        """Open a streaming chat request, retrying rate limits and server errors.
+
+        e-INFRA allows only a few parallel requests per key (429) and hosted
+        models occasionally restart (5xx); both are retried before any data flows.
+        """
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_context()), NoRedirect())
+        delays = {429: (3, 6, 10, 15, 20, 30), 500: (2, 5, 10), 502: (2, 5, 10), 503: (3, 8, 15), 504: (3, 8, 15)}
+        attempt = 0
+        while True:
+            if self._cancelled or (cancel and cancel()):
+                raise AIError("Požadavek byl zrušen.")
+            request = urllib.request.Request(
+                self.base_url + "/chat/completions", data=body,
+                headers={"Authorization": "Bearer " + self._key, "Content-Type": "application/json",
+                         "Accept": "text/event-stream"},
+            )
+            try:
+                return opener.open(request, timeout=self.timeout)
+            except urllib.error.HTTPError as exc:
+                try:
+                    detail = exc.read(4000).decode("utf-8", "replace").replace(self._key, "…")
+                except OSError:
+                    detail = ""
+                if exc.code == 400 and "multimodal" in detail.lower():
+                    raise VisionUnsupported("Model nepřijímá obrázky.") from None
+                waits = delays.get(exc.code)
+                if waits and attempt < len(waits):
+                    self._wait(waits[attempt], cancel)
+                    attempt += 1
+                    continue
+                labels = {401: "Neplatný API klíč.", 403: "API přístup není povolen.",
+                          429: "AI služba je přetížená (limit souběžných požadavků). Zkus to za chvíli.",
+                          408: "API požadavek překročil časový limit.", 404: "Model nebo adresa API neexistuje."}
+                message = labels.get(exc.code, f"API vrátilo HTTP {exc.code}.")
+                if exc.code == 400:
+                    message += " " + _server_message(detail)
+                raise AIError(message.strip()) from None
+            except urllib.error.URLError as exc:
+                if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                    raise AIError("Certifikát AI serveru nelze ověřit. Zkontroluj síť (proxy) "
+                                  "nebo nainstaluj balíček certifi.") from None
+                if attempt < 2 and not self._cancelled:
+                    self._wait(3, cancel)
+                    attempt += 1
+                    continue
+                raise AIError("Připojení k AI se nezdařilo. Ověř API adresu a síť.") from None
+            except (TimeoutError, OSError):
+                if self._cancelled:
+                    raise AIError("Požadavek byl zrušen.") from None
+                raise AIError("Připojení k AI se nezdařilo (časový limit). Ověř síť.") from None
+
+    def chat(self, model: str, messages: list, tools: list | None = None, cancel=None,
+             on_delta=None, max_tokens: int | None = None) -> dict:
+        """One assistant turn: {'content', 'reasoning', 'tool_calls', 'finish_reason'}.
+
+        Streams so that long reasoning stays cancellable and visible
+        (``on_delta(kind, text)`` with kind 'content' or 'reasoning').
+        """
+        if not model.strip():
+            raise AIError("Vyber model.")
+        payload = {"model": model, "messages": messages, "stream": True}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if max_tokens:
+            payload["max_tokens"] = int(max_tokens)
+        with self._lock:
+            self._cancelled = False
+        content, reasoning, calls = [], [], {}
+        finish, size, done = None, 0, False
+        try:
+            with self._open_chat(payload, cancel) as response:
+                with self._lock:
+                    self._response = response
+                    if self._cancelled:
+                        raise AIError("Požadavek byl zrušen.")
+                if "text/event-stream" not in response.headers.get("Content-Type", ""):
+                    raw = response.read(MAX_CHAT_BYTES + 1)
+                    if len(raw) > MAX_CHAT_BYTES:
+                        raise AIError("AI odpověď je příliš dlouhá.")
+                    return _message_result(json.loads(raw)["choices"][0])
+                while True:
+                    if self._cancelled or (cancel and cancel()):
+                        raise AIError("Požadavek byl zrušen.")
+                    line = response.readline(MAX_CHAT_BYTES + 1)
+                    if not line:
+                        break
+                    size += len(line)
+                    if size > MAX_CHAT_BYTES:
+                        raise AIError("AI odpověď je příliš dlouhá.")
+                    if not line.startswith(b"data:"):
+                        continue
+                    event = line[5:].strip()
+                    if event == b"[DONE]":
+                        done = True
+                        break
+                    item = json.loads(event)
+                    if "error" in item:
+                        raise AIError("AI služba oznámila chybu během generování: "
+                                      + _server_message(json.dumps(item["error"])))
+                    for choice in item.get("choices", [])[:1]:
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            content.append(text)
+                            if on_delta:
+                                on_delta("content", text)
+                        thought = delta.get("reasoning_content") or delta.get("reasoning")
+                        if isinstance(thought, str) and thought:
+                            reasoning.append(thought)
+                            if on_delta:
+                                on_delta("reasoning", thought)
+                        for part in delta.get("tool_calls") or []:
+                            index = part.get("index")
+                            if not isinstance(index, int):
+                                # Some servers omit the index: a new id starts a new call.
+                                index = (len(calls) if part.get("id") and part.get("id") not in
+                                         {c["id"] for c in calls.values()} else max(calls, default=0))
+                            slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                            slot["id"] = part.get("id") or slot["id"]
+                            function = part.get("function") or {}
+                            slot["name"] += function.get("name") or ""
+                            slot["arguments"] += function.get("arguments") or ""
+                        finish = choice.get("finish_reason") or finish
+        except (ValueError, KeyError, TypeError, IndexError) as exc:
+            if isinstance(exc, AIError):
+                raise
+            if self._cancelled:
+                raise AIError("Požadavek byl zrušen.") from None
+            raise AIError("AI vrátila neplatnou odpověď.") from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if self._cancelled:
+                raise AIError("Požadavek byl zrušen.") from None
+            raise AIError("Spojení s AI bylo přerušeno.") from None
+        finally:
+            with self._lock:
+                self._response = None
+        if self._cancelled:
+            raise AIError("Požadavek byl zrušen.")
+        if not done and finish is None:
+            raise AIError("AI stream se nedokončil.")
+        tool_calls = [calls[index] for index in sorted(calls)]
+        return _finalise({"content": "".join(content), "reasoning": "".join(reasoning),
+                          "tool_calls": tool_calls, "finish_reason": finish or "stop"})
+
     def propose(
         self, model: str, prompt: str, context: dict, cancel=None, progress=None
     ) -> dict:
@@ -551,3 +732,51 @@ class EInfraClient:
         if not done:
             raise AIError("AI stream se nedokončil; návrh nebude aplikován.")
         return parse_plan("".join(chunks))
+
+
+def _server_message(detail: str) -> str:
+    """Short, key-free summary of an error body for the user and the agent."""
+    text = re.sub(r"(api[_-]?key[\s:=]+|Bearer\s+|token[\s:=]+)[A-Za-z0-9_\-.]{8,}", r"\1…",
+                  detail or "", flags=re.IGNORECASE)
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            payload = payload.get("error", payload)
+            text = payload.get("message", text) if isinstance(payload, dict) else str(payload)
+    except ValueError:
+        pass
+    return re.sub(r"\s+", " ", str(text)).strip()[:300]
+
+
+_TEXT_TOOL_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+
+def _finalise(result: dict) -> dict:
+    """Recover tool calls that a misconfigured server left inside the text."""
+    if not result["tool_calls"] and "<tool_call>" in result["content"]:
+        calls = []
+        for index, block in enumerate(_TEXT_TOOL_CALL.findall(result["content"])):
+            try:
+                item = json.loads(block)
+            except ValueError:
+                continue
+            arguments = item.get("arguments", item.get("parameters", {}))
+            calls.append({"id": f"text_call_{index}", "name": str(item.get("name", "")),
+                          "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments)})
+        if calls:
+            result["tool_calls"] = calls
+            result["content"] = _TEXT_TOOL_CALL.sub("", result["content"]).strip()
+    result["content"] = _THINK_BLOCK.sub("", result["content"]).strip()
+    for index, call in enumerate(result["tool_calls"]):
+        call["id"] = call.get("id") or f"call_{index}"
+    return result
+
+
+def _message_result(choice: dict) -> dict:
+    message = choice.get("message") or {}
+    calls = [{"id": call.get("id", ""), "name": (call.get("function") or {}).get("name", ""),
+              "arguments": (call.get("function") or {}).get("arguments", "") or ""}
+             for call in message.get("tool_calls") or []]
+    return _finalise({"content": message.get("content") or "",
+                      "reasoning": message.get("reasoning_content") or message.get("reasoning") or "",
+                      "tool_calls": calls, "finish_reason": choice.get("finish_reason") or "stop"})

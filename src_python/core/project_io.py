@@ -81,6 +81,8 @@ def settings_from_dict(cls, data: dict):
         'leader_color_mode': {'trace', 'custom'}, 'frame_mode': {'open', 'box'},
         'plot_canvas': {'auto', 'white', 'dark'},
         'scale_mode': {'common', 'full'},
+        'tick_direction': {'out', 'in', 'inout'},
+        'spectrum_label_position': {'right', 'inside'},
     }
     for key, options in enums.items():
         if hasattr(instance, key) and getattr(instance, key) not in options:
